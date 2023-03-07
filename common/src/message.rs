@@ -4,10 +4,6 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::id::{MessageId, NodeId, SiteId};
 
-pub trait MaybeBorrowed {
-    type T<'b>: Serialize;
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Message<B> {
     pub src: SiteId,
@@ -15,8 +11,9 @@ pub struct Message<B> {
     pub body: B,
 }
 
-impl_req_msg!(
+impl_msg!(
     "init",
+    #[Deserialize]
     struct InitRequest {
         pub msg_id: MessageId,
         pub node_id: NodeId,
@@ -24,45 +21,51 @@ impl_req_msg!(
     }
 );
 
-impl_res_msg!(
+impl_msg!(
     "init_ok",
+    #[Serialize]
     struct InitResponse {
         pub in_reply_to: MessageId,
     }
 );
 
-impl_req_msg!(
+impl_msg!(
     "echo",
+    #[Deserialize]
     struct EchoRequest {
         pub msg_id: MessageId,
         pub echo: String,
     }
 );
 
-impl_res_msg!(
+impl_msg!(
     "echo_ok",
+    #[Serialize]
     struct EchoResponse {
         pub in_reply_to: MessageId,
         pub echo: String,
     }
 );
 
-impl_req_msg!(
+impl_msg!(
     "generate",
+    #[Deserialize]
     struct GenerateRequest {
         pub msg_id: MessageId,
     }
 );
 
-impl_res_msg!(
+impl_msg!(
     "generate_ok",
+    #[Serialize]
     struct GenerateResponse {
         pub in_reply_to: MessageId,
         pub id: [u64; 2],
     }
 );
 
-impl_req_msg!(
+impl_msg!(
+    #[Deserialize]
     enum BroadcastRequest {
         Topology {
             msg_id: MessageId,
@@ -78,7 +81,8 @@ impl_req_msg!(
     }
 );
 
-impl_res_msg!(
+impl_msg!(
+    #[Serialize]
     enum BroadcastResponse<'a> {
         TopologyOk {
             in_reply_to: MessageId,
@@ -109,58 +113,18 @@ pub enum ErrorCode {
     TxnConflict = 30,
 }
 
-macro_rules! impl_res_msg {
-    ($rename:literal, struct $id:ident<$lifetime:lifetime> $($tokens:tt)*) => {
-        #[derive(Debug, Serialize)]
-        #[serde(tag = "type")]
-        #[serde(rename = $rename)]
-        pub struct $id<$lifetime> $($tokens)*
-        impl<'a> MaybeBorrowed for $id<'a> {
-            type T<'b> = $id<'b>;
-        }
-    };
-    (enum $id:ident<$lifetime:lifetime> $($tokens:tt)*) => {
-        #[derive(Debug, Serialize)]
-        #[serde(tag = "type")]
-        #[serde(rename_all = "snake_case")]
-        pub enum $id<$lifetime> $($tokens)*
-        impl<'a> MaybeBorrowed for $id<'a> {
-            type T<'b> = $id<'b>;
-        }
-    };
-    ($rename:literal, struct $id:ident $($tokens:tt)*) => {
-        #[derive(Debug, Serialize)]
-        #[serde(tag = "type")]
-        #[serde(rename = $rename)]
-        pub struct $id $($tokens)*
-        impl MaybeBorrowed for $id {
-            type T<'b> = $id;
-        }
-    };
-    (enum $id:ident $($tokens:tt)*) => {
-        #[derive(Debug, Serialize)]
-        #[serde(tag = "type")]
-        #[serde(rename_all = "snake_case")]
-        pub enum $id $($tokens)*
-        impl MaybeBorrowed for $id {
-            type T<'b> = $id;
-        }
-    };
-}
-use impl_res_msg;
-
-macro_rules! impl_req_msg {
-    ($rename:literal, struct $($tokens:tt)*) => {
-        #[derive(Debug, Deserialize)]
+macro_rules! impl_msg {
+    ($rename:literal, #[$($derive:path),*] struct $($tokens:tt)*) => {
+        #[derive(Debug, $($derive),*)]
         #[serde(tag = "type")]
         #[serde(rename = $rename)]
         pub struct $($tokens)*
     };
-    (enum $($tokens:tt)*) => {
-        #[derive(Debug, Deserialize)]
+    (#[$($derive:path),*] enum $($tokens:tt)*) => {
+        #[derive(Debug, $($derive),*)]
         #[serde(tag = "type")]
         #[serde(rename_all = "snake_case")]
         pub enum $($tokens)*
     };
 }
-use impl_req_msg;
+use impl_msg;

@@ -7,18 +7,36 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
     id::NodeId,
-    message::MaybeBorrowed,
     message::{InitRequest, InitResponse, Message},
 };
 
-pub struct Node<T> {
-    pub info: NodeInfo,
-    pub state: T,
+struct InnerNode<T> {
+    node_id: NodeId,
+    node_ids: Vec<NodeId>,
+    state: T,
 }
 
-pub struct NodeInfo {
-    pub node_id: NodeId,
-    pub node_ids: Vec<NodeId>,
+pub struct Node<'a, T> {
+    inner_node: &'a InnerNode<T>,
+    stdout: &'a Stdout,
+}
+
+impl<'a, T> Node<'a, T> {
+    pub fn send_msg<B: Serialize>(&self, msg: &Message<B>) {
+        let response_ser = serde_json::to_string(&msg).unwrap();
+        writeln!(self.stdout.lock(), "{response_ser}").unwrap();
+    }
+
+    pub fn node_id(&self) -> NodeId {
+        self.inner_node.node_id
+    }
+    pub fn node_ids(&self) -> &[NodeId] {
+        &self.inner_node.node_ids
+    }
+
+    pub fn state(&self) -> &T {
+        &self.inner_node.state
+    }
 }
 
 pub struct NodeBuilder {
@@ -59,13 +77,11 @@ impl NodeBuilder {
         }
     }
 
-    pub fn with_state<T: Send + Sync + 'static>(self, state: T) -> NodeRunBuilder<Node<T>> {
+    pub fn with_state<T: Send + Sync + 'static>(self, state: T) -> NodeRunBuilder<T> {
         NodeRunBuilder {
-            state: Node {
-                info: NodeInfo {
-                    node_id: self.node_id,
-                    node_ids: self.node_ids,
-                },
+            data: InnerNode {
+                node_id: self.node_id,
+                node_ids: self.node_ids,
                 state,
             },
             stdin: self.stdin,
@@ -73,14 +89,15 @@ impl NodeBuilder {
         }
     }
 
-    pub async fn run<Req: DeserializeOwned + 'static, Res: MaybeBorrowed + Serialize + 'static>(
+    pub async fn run<Req: DeserializeOwned + 'static>(
         self,
-        msg_handler: fn(&NodeInfo, Message<Req>) -> Message<Res::T<'_>>,
+        msg_handler: fn(&Node<()>, Message<Req>),
     ) {
         NodeRunBuilder {
-            state: NodeInfo {
+            data: InnerNode {
                 node_id: self.node_id,
                 node_ids: self.node_ids,
+                state: (),
             },
             stdin: self.stdin,
             stdout: self.stdout,
@@ -91,26 +108,29 @@ impl NodeBuilder {
 }
 
 pub struct NodeRunBuilder<T: Send + Sync + 'static> {
-    state: T,
+    data: InnerNode<T>,
     stdin: Stdin,
     stdout: Stdout,
 }
 
 impl<T: Send + Sync + 'static> NodeRunBuilder<T> {
-    pub async fn run<Req: DeserializeOwned + 'static, Res: MaybeBorrowed + Serialize + 'static>(
+    pub async fn run<Req: DeserializeOwned + 'static>(
         self,
-        msg_handler: fn(&T, Message<Req>) -> Message<Res::T<'_>>,
+        msg_handler: fn(&Node<T>, Message<Req>),
     ) {
-        let node_state = Arc::new(self.state);
-        let mut lines = self.stdin.lines();
+        let node_state = Arc::new(self.data);
         let stdout = Arc::new(self.stdout);
+        let mut lines = self.stdin.lines();
         while let Some(Ok(line)) = lines.next() {
             let stdout = stdout.clone();
-            let node_state = node_state.clone();
+            let inner_node = node_state.clone();
             let _handle = tokio::spawn(async move {
+                let node = Node {
+                    inner_node: &inner_node,
+                    stdout: &stdout,
+                };
                 let request_msg: Message<Req> = serde_json::from_str(&line).unwrap();
-                let response_msg = msg_handler(&node_state, request_msg);
-                send_msg(&stdout, &response_msg);
+                msg_handler(&node, request_msg);
             });
         }
     }
