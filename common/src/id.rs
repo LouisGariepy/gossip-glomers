@@ -6,9 +6,11 @@ pub struct MessageId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientId(pub u64);
+impl_id_serde!(ClientId, 'c');
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u64);
+impl_id_serde!(NodeId, 'n');
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SiteId {
@@ -51,9 +53,7 @@ impl<'de> Deserialize<'de> for SiteId {
             ))),
             invalid => Err(serde::de::Error::custom(format!(
                 "site id must start with either \"c\" (for client) or \"n\" (for node), got \"{}\"",
-                invalid
-                    .map(String::from)
-                    .unwrap_or_else(|| String::from("<NONE>"))
+                invalid.map_or_else(|| String::from("<NONE>"), String::from)
             ))),
         }
     }
@@ -99,6 +99,4 @@ macro_rules! impl_id_serde {
         }
     };
 }
-
-impl_id_serde!(NodeId, 'n');
-impl_id_serde!(ClientId, 'c');
+use impl_id_serde;

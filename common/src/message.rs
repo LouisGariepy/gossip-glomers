@@ -1,19 +1,27 @@
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::id::{MessageId, NodeId, SiteId};
 
+pub type Topology = FxHashMap<NodeId, Vec<NodeId>>;
+
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Message<B> {
+pub struct Message<Body> {
     pub src: SiteId,
     pub dest: SiteId,
-    pub body: B,
+    pub body: Body,
+}
+
+impl<Body: Serialize> Message<Body> {
+    pub fn to_json(&self) -> JsonString {
+        JsonString(serde_json::to_string(self).unwrap())
+    }
 }
 
 impl_msg!(
     "init",
-    #[Deserialize]
+    #[Serialize, Deserialize]
     struct InitRequest {
         pub msg_id: MessageId,
         pub node_id: NodeId,
@@ -31,7 +39,7 @@ impl_msg!(
 
 impl_msg!(
     "echo",
-    #[Deserialize]
+    #[Serialize, Deserialize]
     struct EchoRequest {
         pub msg_id: MessageId,
         pub echo: String,
@@ -49,7 +57,7 @@ impl_msg!(
 
 impl_msg!(
     "generate",
-    #[Deserialize]
+    #[Serialize, Deserialize]
     struct GenerateRequest {
         pub msg_id: MessageId,
     }
@@ -65,33 +73,38 @@ impl_msg!(
 );
 
 impl_msg!(
-    #[Deserialize]
+    "topology",
+    #[Serialize, Deserialize]
+    struct TopologyRequest {
+        pub msg_id: MessageId,
+        pub topology: FxHashMap<NodeId, Vec<NodeId>>,
+    }
+);
+
+impl_msg!(
+    "topology_ok",
+    #[Serialize]
+    struct TopologyResponse {
+        pub in_reply_to: MessageId,
+    }
+);
+
+impl_msg!(
+    #[Serialize, Deserialize]
     enum BroadcastRequest {
-        Topology {
-            msg_id: MessageId,
-            topology: FxHashMap<NodeId, Vec<NodeId>>,
-        },
-        Broadcast {
-            msg_id: MessageId,
-            message: u64,
-        },
-        Read {
-            msg_id: MessageId,
-        },
+        Broadcast { msg_id: MessageId, message: u64 },
+        Read { msg_id: MessageId },
     }
 );
 
 impl_msg!(
     #[Serialize]
     enum BroadcastResponse<'a> {
-        TopologyOk {
-            in_reply_to: MessageId,
-        },
         BroadcastOk {
             in_reply_to: MessageId,
         },
         ReadOk {
-            messages: &'a [u64],
+            messages: &'a FxHashSet<u64>,
             in_reply_to: MessageId,
         },
     }
@@ -111,6 +124,14 @@ pub enum ErrorCode {
     KeyAlreadyExists = 21,
     PreconditionFailed = 22,
     TxnConflict = 30,
+}
+
+pub struct JsonString(String);
+
+impl JsonString {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 macro_rules! impl_msg {

@@ -1,5 +1,5 @@
 use std::{
-    io::{stdin, stdout, Stdin, Stdout, Write},
+    io::{stdin, stdout, Lines, Stdin, StdinLock, Stdout, Write},
     sync::Arc,
 };
 
@@ -7,57 +7,73 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
     id::NodeId,
-    message::{InitRequest, InitResponse, Message},
+    message::{InitRequest, InitResponse, JsonString, Message},
 };
 
-struct InnerNode<T> {
-    node_id: NodeId,
-    node_ids: Vec<NodeId>,
-    state: T,
+pub struct Node<InitialData, State> {
+    pub initial_data: InitialData,
+    pub node_id: NodeId,
+    pub node_ids: Vec<NodeId>,
+    pub state: State,
+    stdout: Stdout,
 }
 
-pub struct Node<'a, T> {
-    inner_node: &'a InnerNode<T>,
-    stdout: &'a Stdout,
-}
-
-impl<'a, T> Node<'a, T> {
-    pub fn send_msg<B: Serialize>(&self, msg: &Message<B>) {
+impl<InitialData, State> Node<InitialData, State> {
+    pub fn send_msg<Body: Serialize>(&self, msg: &Message<Body>) {
         let response_ser = serde_json::to_string(&msg).unwrap();
         writeln!(self.stdout.lock(), "{response_ser}").unwrap();
     }
 
-    pub fn node_id(&self) -> NodeId {
-        self.inner_node.node_id
-    }
-    pub fn node_ids(&self) -> &[NodeId] {
-        &self.inner_node.node_ids
-    }
-
-    pub fn state(&self) -> &T {
-        &self.inner_node.state
+    pub fn send_json_msg(&self, ser_msg: &JsonString) {
+        let msg_str = ser_msg.as_str();
+        writeln!(self.stdout.lock(), "{msg_str}").unwrap();
     }
 }
 
-pub struct NodeBuilder {
+pub struct NodeChannel<'a> {
+    stdin_lines: Lines<StdinLock<'a>>,
+    stdout: Stdout,
+}
+
+impl<'a> NodeChannel<'a> {
+    pub fn send_msg<Body: Serialize>(&self, msg: &Message<Body>) {
+        let response_ser = serde_json::to_string(&msg).unwrap();
+        writeln!(self.stdout.lock(), "{response_ser}").unwrap();
+    }
+
+    pub fn receive_msg<Body: DeserializeOwned>(&mut self) -> Message<Body> {
+        let line = self.stdin_lines.next().unwrap().unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+}
+
+pub struct NodeBuilder<InitialData> {
+    initial_data: InitialData,
     node_id: NodeId,
     node_ids: Vec<NodeId>,
     stdin: Stdin,
     stdout: Stdout,
 }
 
-impl NodeBuilder {
+impl NodeBuilder<()> {
     #[must_use]
     pub fn init() -> Self {
-        let stdin = stdin();
-        let stdout = stdout();
-        let mut buf = String::new();
+        NodeBuilder::init_with(|_| ())
+    }
+}
 
-        eprintln!("Waiting for init request...");
-        let msg = receive_msg::<InitRequest>(&mut buf, &stdin);
-        eprintln!("Init request received!");
+impl<InitialData> NodeBuilder<InitialData>
+where
+    InitialData: Send + Sync + 'static,
+{
+    #[must_use]
+    pub fn init_with(init: fn(&mut NodeChannel) -> InitialData) -> Self {
+        let mut channel = NodeChannel {
+            stdin_lines: stdin().lines(),
+            stdout: stdout(),
+        };
 
-        eprintln!("Sending init response...");
+        let msg = channel.receive_msg::<InitRequest>();
         let init_reponse = Message {
             src: msg.dest,
             dest: msg.src,
@@ -65,83 +81,79 @@ impl NodeBuilder {
                 in_reply_to: msg.body.msg_id,
             },
         };
-        send_msg(&stdout, &init_reponse);
-        eprintln!("Init response sent!");
+        channel.send_msg(&init_reponse);
 
-        eprintln!("Node initialization complete!");
+        let init_state = init(&mut channel);
+
         NodeBuilder {
+            initial_data: init_state,
             node_id: msg.body.node_id,
             node_ids: msg.body.node_ids,
-            stdin,
-            stdout,
+            stdin: stdin(),
+            stdout: channel.stdout,
         }
     }
 
-    pub fn with_state<T: Send + Sync + 'static>(self, state: T) -> NodeRunBuilder<T> {
-        NodeRunBuilder {
-            data: InnerNode {
+    pub fn with_state<State>(self, state: State) -> NodeRunner<InitialData, State>
+    where
+        State: Send + Sync + 'static,
+    {
+        NodeRunner {
+            node: Node {
+                initial_data: self.initial_data,
                 node_id: self.node_id,
                 node_ids: self.node_ids,
                 state,
+                stdout: self.stdout,
             },
             stdin: self.stdin,
-            stdout: self.stdout,
         }
     }
 
-    pub async fn run<Req: DeserializeOwned + 'static>(
-        self,
-        msg_handler: fn(&Node<()>, Message<Req>),
-    ) {
-        NodeRunBuilder {
-            data: InnerNode {
+    pub async fn run<Req>(self, msg_handler: fn(Arc<Node<InitialData, ()>>, Message<Req>))
+    where
+        Req: DeserializeOwned + 'static,
+    {
+        NodeRunner {
+            node: Node {
+                initial_data: self.initial_data,
                 node_id: self.node_id,
                 node_ids: self.node_ids,
                 state: (),
+                stdout: self.stdout,
             },
             stdin: self.stdin,
-            stdout: self.stdout,
         }
-        .run(msg_handler)
-        .await;
+        .run(msg_handler);
     }
 }
 
-pub struct NodeRunBuilder<T: Send + Sync + 'static> {
-    data: InnerNode<T>,
+pub struct NodeRunner<InitData, State>
+where
+    InitData: Send + Sync + 'static,
+    State: Send + Sync + 'static,
+{
     stdin: Stdin,
-    stdout: Stdout,
+    node: Node<InitData, State>,
 }
 
-impl<T: Send + Sync + 'static> NodeRunBuilder<T> {
-    pub async fn run<Req: DeserializeOwned + 'static>(
+impl<InitData, State> NodeRunner<InitData, State>
+where
+    InitData: Send + Sync + 'static,
+    State: Send + Sync + 'static,
+{
+    pub fn run<Req: DeserializeOwned + 'static>(
         self,
-        msg_handler: fn(&Node<T>, Message<Req>),
+        msg_handler: fn(Arc<Node<InitData, State>>, Message<Req>),
     ) {
-        let node_state = Arc::new(self.data);
-        let stdout = Arc::new(self.stdout);
+        let node = Arc::new(self.node);
         let mut lines = self.stdin.lines();
         while let Some(Ok(line)) = lines.next() {
-            let stdout = stdout.clone();
-            let inner_node = node_state.clone();
+            let node_asd = node.clone();
             let _handle = tokio::spawn(async move {
-                let node = Node {
-                    inner_node: &inner_node,
-                    stdout: &stdout,
-                };
                 let request_msg: Message<Req> = serde_json::from_str(&line).unwrap();
-                msg_handler(&node, request_msg);
+                msg_handler(node_asd, request_msg);
             });
         }
     }
-}
-
-fn send_msg<T: Serialize>(stdout: &Stdout, msg: &Message<T>) {
-    let response_ser = serde_json::to_string(&msg).unwrap();
-    writeln!(stdout.lock(), "{response_ser}").unwrap();
-}
-
-fn receive_msg<T: DeserializeOwned>(buf: &mut String, stdin: &Stdin) -> Message<T> {
-    stdin.read_line(buf).unwrap();
-    serde_json::from_str(buf).unwrap()
 }

@@ -15,12 +15,8 @@ async fn main() {
                 dest: msg.src,
                 body: GenerateResponse {
                     in_reply_to: msg.body.msg_id,
-                    id: [
-                        node.node_id().0,
-                        node.state().fetch_add(1, Ordering::SeqCst),
-                    ],
+                    id: [node.node_id.0, node.state.fetch_add(1, Ordering::SeqCst)],
                 },
             })
-        })
-        .await;
+        });
 }
