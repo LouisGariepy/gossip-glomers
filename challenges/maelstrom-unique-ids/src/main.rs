@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use common::{
-    message::{GenerateRequest, GenerateResponse, Message},
+    message::{GenerateRequest, GenerateResponse, Message, Response},
     node::NodeBuilder,
 };
 
@@ -9,13 +9,15 @@ use common::{
 async fn main() {
     NodeBuilder::init()
         .with_state(AtomicU64::new(0))
-        .run::<GenerateRequest>(|node, msg| {
+        .run::<GenerateRequest, GenerateResponse, _>(|node, msg| async move {
             node.send_msg(&Message {
                 src: msg.dest,
                 dest: msg.src,
-                body: GenerateResponse {
+                body: Response {
                     in_reply_to: msg.body.msg_id,
-                    id: [node.node_id.0, node.state.fetch_add(1, Ordering::SeqCst)],
+                    kind: GenerateResponse {
+                        id: [node.node_id.0, node.state.fetch_add(1, Ordering::SeqCst)],
+                    },
                 },
             })
         });

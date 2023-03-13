@@ -5,9 +5,13 @@ use std::sync::{
 
 use common::{
     id::{MessageId, SiteId},
-    message::{BroadcastRequest, BroadcastResponse, Message, TopologyRequest, TopologyResponse},
+    message::{
+        BroadcastRequest, InboundBroadcastResponse, Message, OutboundBroadcastResponse, Request,
+        Response, TopologyRequest, TopologyResponse,
+    },
     node::NodeBuilder,
 };
+use futures::{stream::FuturesUnordered, StreamExt};
 use rustc_hash::FxHashSet;
 
 #[derive(Debug, Default)]
@@ -18,64 +22,75 @@ struct NodeState {
 
 #[tokio::main]
 async fn main() {
-    NodeBuilder::init_with(|channel| {
-        let topology_msg = channel.receive_msg::<TopologyRequest>();
-        channel.send_msg(&Message {
-            src: topology_msg.dest,
-            dest: topology_msg.src,
-            body: TopologyResponse {
-                in_reply_to: topology_msg.body.msg_id,
-            },
-        });
-        topology_msg.body.topology
-    })
-    .with_state(NodeState::default())
-    .run(|node, msg| match msg.body {
-        BroadcastRequest::Broadcast { msg_id, message } => {
-            let inserted = node.state.messages.lock().unwrap().insert(message);
-            if inserted {
-                let neighbours = node
-                    .initial_data
-                    .get(&node.node_id)
-                    .unwrap()
-                    .iter()
-                    .filter(|&&n| SiteId::Node(n) != msg.src);
-
-                for neighbour in neighbours {
-                    let neighbour = *neighbour;
-                    let node = node.clone();
-                    let msg_id = node.state.next_msg_id.fetch_add(1, Ordering::SeqCst);
-                    tokio::spawn(async move {
-                        node.send_msg(&Message {
-                            src: msg.dest,
-                            dest: SiteId::Node(neighbour),
-                            body: BroadcastRequest::Broadcast {
-                                msg_id: MessageId(msg_id),
-                                message,
-                            },
-                        })
-                    });
-                }
-            }
-            node.send_msg(&Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: BroadcastResponse::BroadcastOk {
-                    in_reply_to: msg_id,
+    NodeBuilder::init()
+        .with_initial_data(|channel| {
+            let topology_msg = channel.receive_msg::<TopologyRequest>();
+            channel.send_msg(&Message {
+                src: topology_msg.dest,
+                dest: topology_msg.src,
+                body: Response {
+                    in_reply_to: topology_msg.body.msg_id,
+                    kind: TopologyResponse {},
                 },
             });
-        }
-        BroadcastRequest::Read { msg_id } => {
-            let ser_msg = Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: BroadcastResponse::ReadOk {
-                    messages: &node.state.messages.lock().unwrap(),
-                    in_reply_to: msg_id,
-                },
+            topology_msg.body.kind.topology
+        })
+        .with_state(NodeState::default())
+        .run::<BroadcastRequest, InboundBroadcastResponse, _>(|node, msg| async move {
+            match msg.body.kind {
+                BroadcastRequest::Broadcast { message } => {
+                    let inserted = node.state.messages.lock().unwrap().insert(message);
+                    if inserted {
+                        let neighbours = node
+                            .initial_data
+                            .get(&node.node_id)
+                            .unwrap()
+                            .iter()
+                            .filter(|&&n| SiteId::Node(n) != msg.src);
+
+                        neighbours
+                            .map(|neighbour| {
+                                let neighbour = *neighbour;
+                                let msg_id = MessageId(
+                                    node.state.next_msg_id.fetch_add(1, Ordering::SeqCst),
+                                );
+                                let rpc_msg = Message {
+                                    src: msg.dest,
+                                    dest: SiteId::Node(neighbour),
+                                    body: Request {
+                                        msg_id,
+                                        kind: BroadcastRequest::Broadcast { message },
+                                    },
+                                };
+                                node.rpc(msg_id, rpc_msg)
+                            })
+                            .collect::<FuturesUnordered<_>>()
+                            .collect::<Vec<_>>()
+                            .await;
+                    }
+                    node.send_msg(&Message {
+                        src: msg.dest,
+                        dest: msg.src,
+                        body: Response {
+                            in_reply_to: msg.body.msg_id,
+                            kind: OutboundBroadcastResponse::BroadcastOk {},
+                        },
+                    });
+                }
+                BroadcastRequest::Read {} => {
+                    let ser_msg = Message {
+                        src: msg.dest,
+                        dest: msg.src,
+                        body: Response {
+                            in_reply_to: msg.body.msg_id,
+                            kind: OutboundBroadcastResponse::ReadOk {
+                                messages: &node.state.messages.lock().unwrap(),
+                            },
+                        },
+                    }
+                    .to_json();
+                    node.send_json_msg(&ser_msg);
+                }
             }
-            .to_json();
-            node.send_json_msg(&ser_msg);
-        }
-    });
+        });
 }

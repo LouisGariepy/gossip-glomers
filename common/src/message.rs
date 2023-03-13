@@ -4,7 +4,26 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::id::{MessageId, NodeId, SiteId};
 
-pub type Topology = FxHashMap<NodeId, Vec<NodeId>>;
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MessageType<RequestBody, ResponseBody> {
+    Request(Request<RequestBody>),
+    Response(Response<ResponseBody>),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Request<Kind> {
+    pub msg_id: MessageId,
+    #[serde(flatten)]
+    pub kind: Kind,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Response<Kind> {
+    pub in_reply_to: MessageId,
+    #[serde(flatten)]
+    pub kind: Kind,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Message<Body> {
@@ -19,94 +38,101 @@ impl<Body: Serialize> Message<Body> {
     }
 }
 
-impl_msg!(
+impl<'de, Body: Deserialize<'de>> Message<Body> {
+    pub fn from_json_str(s: &'de str) -> Self {
+        serde_json::from_str(s).unwrap()
+    }
+}
+
+pub struct JsonString(String);
+
+impl JsonString {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+define_msg_kind!(
     "init",
     #[Serialize, Deserialize]
-    struct InitRequest {
-        pub msg_id: MessageId,
+    pub struct InitRequest {
         pub node_id: NodeId,
         pub node_ids: Vec<NodeId>,
     }
 );
 
-impl_msg!(
+define_msg_kind!(
     "init_ok",
-    #[Serialize]
-    struct InitResponse {
-        pub in_reply_to: MessageId,
-    }
+    #[Serialize, Deserialize]
+    pub struct InitResponse {}
 );
 
-impl_msg!(
+define_msg_kind!(
     "echo",
     #[Serialize, Deserialize]
-    struct EchoRequest {
-        pub msg_id: MessageId,
+    pub struct EchoRequest {
         pub echo: String,
     }
 );
 
-impl_msg!(
+define_msg_kind!(
     "echo_ok",
-    #[Serialize]
-    struct EchoResponse {
-        pub in_reply_to: MessageId,
+    #[Serialize, Deserialize]
+    pub struct EchoResponse {
         pub echo: String,
     }
 );
 
-impl_msg!(
+define_msg_kind!(
     "generate",
     #[Serialize, Deserialize]
-    struct GenerateRequest {
-        pub msg_id: MessageId,
-    }
+    pub struct GenerateRequest {}
 );
 
-impl_msg!(
+define_msg_kind!(
     "generate_ok",
-    #[Serialize]
-    struct GenerateResponse {
-        pub in_reply_to: MessageId,
+    #[Serialize, Deserialize]
+    pub struct GenerateResponse {
         pub id: [u64; 2],
     }
 );
 
-impl_msg!(
+pub type Topology = FxHashMap<NodeId, Vec<NodeId>>;
+define_msg_kind!(
     "topology",
     #[Serialize, Deserialize]
-    struct TopologyRequest {
-        pub msg_id: MessageId,
-        pub topology: FxHashMap<NodeId, Vec<NodeId>>,
+    pub struct TopologyRequest {
+        pub topology: Topology,
     }
 );
 
-impl_msg!(
+define_msg_kind!(
     "topology_ok",
-    #[Serialize]
-    struct TopologyResponse {
-        pub in_reply_to: MessageId,
-    }
-);
-
-impl_msg!(
     #[Serialize, Deserialize]
-    enum BroadcastRequest {
-        Broadcast { msg_id: MessageId, message: u64 },
-        Read { msg_id: MessageId },
+    pub struct TopologyResponse {}
+);
+
+define_msg_kind!(
+    #[Serialize, Deserialize]
+    pub enum BroadcastRequest {
+        Broadcast { message: u64 },
+        Read {},
     }
 );
 
-impl_msg!(
+define_msg_kind!(
     #[Serialize]
-    enum BroadcastResponse<'a> {
-        BroadcastOk {
-            in_reply_to: MessageId,
-        },
-        ReadOk {
-            messages: &'a FxHashSet<u64>,
-            in_reply_to: MessageId,
-        },
+    pub enum OutboundBroadcastResponse<'a> {
+        BroadcastOk {},
+        ReadOk { messages: &'a FxHashSet<u64> },
+    }
+);
+
+define_msg_kind!(
+    #[Serialize, Deserialize]
+    pub enum InboundBroadcastResponse {
+        BroadcastOk {},
+        ReadOk { messages: FxHashSet<u64> },
     }
 );
 
@@ -126,26 +152,18 @@ pub enum ErrorCode {
     TxnConflict = 30,
 }
 
-pub struct JsonString(String);
-
-impl JsonString {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-macro_rules! impl_msg {
-    ($rename:literal, #[$($derive:path),*] struct $($tokens:tt)*) => {
+macro_rules! define_msg_kind {
+    ($rename:literal, #[$($derive:path),*] $vis:vis struct $($tokens:tt)*) => {
         #[derive(Debug, $($derive),*)]
         #[serde(tag = "type")]
         #[serde(rename = $rename)]
-        pub struct $($tokens)*
+        $vis struct $($tokens)*
     };
-    (#[$($derive:path),*] enum $($tokens:tt)*) => {
+    (#[$($derive:path),*] $vis:vis enum $($tokens:tt)*) => {
         #[derive(Debug, $($derive),*)]
         #[serde(tag = "type")]
         #[serde(rename_all = "snake_case")]
-        pub enum $($tokens)*
+        $vis enum $($tokens)*
     };
 }
-use impl_msg;
+use define_msg_kind;

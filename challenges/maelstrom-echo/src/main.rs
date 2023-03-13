@@ -1,20 +1,20 @@
 use common::{
-    message::{EchoRequest, EchoResponse, Message},
+    message::{EchoRequest, EchoResponse, Message, Response},
     node::NodeBuilder,
 };
 
 #[tokio::main]
 async fn main() {
-    NodeBuilder::init()
-        .run::<EchoRequest>(|node, msg| {
-            node.send_msg(&Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: EchoResponse {
-                    in_reply_to: msg.body.msg_id,
-                    echo: msg.body.echo,
+    NodeBuilder::init().run::<EchoRequest, EchoResponse, _>(|node, msg| async move {
+        node.send_msg(&Message {
+            src: msg.dest,
+            dest: msg.src,
+            body: Response {
+                in_reply_to: msg.body.msg_id,
+                kind: EchoResponse {
+                    echo: msg.body.kind.echo,
                 },
-            })
+            },
         })
-        .await;
+    });
 }
