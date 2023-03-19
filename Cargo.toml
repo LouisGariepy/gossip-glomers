@@ -1,2 +1,3 @@
 [workspace]
-members = ["challenges/*", "common"]
+members = ["runner", "common", "challenges/*"]
+default-members = ["runner"]

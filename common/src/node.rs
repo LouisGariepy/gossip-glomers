@@ -1,7 +1,9 @@
 use std::{
     future::Future,
     io::{stdin, stdout, Stdin, Stdout, Write},
+    marker::PhantomData,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use rustc_hash::FxHashMap;
@@ -10,45 +12,95 @@ use tokio::sync::oneshot;
 
 use crate::{
     id::{MessageId, NodeId},
-    message::{InitRequest, InitResponse, JsonString, Message, MessageType, Request, Response},
+    json::Json,
+    message::{InitRequest, InitResponse, Message, MessageType, Request, Response},
 };
 
-pub struct Node<InitialData, State, InboundResponseBody> {
-    pub initial_data: InitialData,
+type Callback<InboundResponseBody> = oneshot::Sender<Message<Response<InboundResponseBody>>>;
+type InboundRequestHandler<State, RequestBody, ResponseBody, F> =
+    fn(Arc<Node<State, RequestBody, ResponseBody>>, Message<Request<RequestBody>>) -> F;
+
+pub struct Node<State, InboundRequestBody, InboundResponseBody> {
     pub node_id: NodeId,
     pub node_ids: Vec<NodeId>,
     pub state: State,
-    pub callbacks:
-        Mutex<FxHashMap<MessageId, oneshot::Sender<Message<Response<InboundResponseBody>>>>>,
+    pub callbacks: Mutex<FxHashMap<MessageId, Callback<InboundResponseBody>>>,
     stdout: Stdout,
+    marker: PhantomData<InboundRequestBody>,
 }
 
-impl<InitialData, State, InboundResponseBody: Serialize>
-    Node<InitialData, State, InboundResponseBody>
+impl<State, InboundRequestBody, InboundResponseBody>
+    Node<State, InboundRequestBody, InboundResponseBody>
+where
+    InboundRequestBody: DeserializeOwned + Send + Sync + 'static,
+    InboundResponseBody: std::fmt::Debug + DeserializeOwned + Send + Sync + 'static,
+    State: Send + Sync + 'static,
 {
-    pub fn send_msg<OutBoundResponseBody: Serialize>(
-        &self,
-        msg: &Message<Response<OutBoundResponseBody>>,
-    ) {
-        writeln!(self.stdout.lock(), "{}", msg.to_json().as_str()).unwrap();
+    pub fn send_msg(&self, msg: impl Into<Json>) {
+        writeln!(self.stdout.lock(), "{}", Into::<Json>::into(msg).as_str()).unwrap();
     }
 
-    pub async fn rpc<OutboundRequestBody: Serialize>(
+    pub async fn rpc(
         &self,
         msg_id: MessageId,
-        msg: Message<Request<OutboundRequestBody>>,
-    ) -> Message<Response<InboundResponseBody>> {
+        msg: &Json,
+    ) -> Option<Message<Response<InboundResponseBody>>> {
         let (sender, receiver) = oneshot::channel();
+        // Insert a new callback
         self.callbacks.lock().unwrap().insert(msg_id, sender);
-        writeln!(self.stdout.lock(), "{}", msg.to_json().as_str()).unwrap();
-        let response = receiver.await.unwrap();
-        eprintln!("Received response!");
-        response
+        // Send RPC request
+        writeln!(self.stdout.lock(), "{}", msg.as_str()).unwrap();
+        // Wait to receive response
+        let result = match tokio::time::timeout(Duration::from_secs(1), receiver).await {
+            // Response received
+            Ok(msg) => Some(msg.unwrap()),
+            // Timeout
+            Err(_) => None,
+        };
+        // Remove callback and return result
+        self.callbacks.lock().unwrap().remove(&msg_id);
+        result
     }
 
-    pub fn send_json_msg(&self, ser_msg: &JsonString) {
-        let msg_str = ser_msg.as_str();
-        writeln!(self.stdout.lock(), "{msg_str}").unwrap();
+    pub fn run<F>(
+        self: Arc<Self>,
+        request_handler: InboundRequestHandler<State, InboundRequestBody, InboundResponseBody, F>,
+    ) where
+        F: Future<Output = ()> + Send + Sync + 'static,
+    {
+        let stdin = stdin();
+        let mut lines = stdin.lines();
+        while let Some(Ok(line)) = lines.next() {
+            let node = self.clone();
+            let msg =
+                Message::<MessageType<InboundRequestBody, InboundResponseBody>>::from_json_str(
+                    &line,
+                );
+            match msg.body {
+                MessageType::Request(request) => {
+                    let request_msg = Message {
+                        src: msg.src,
+                        dest: msg.dest,
+                        body: request,
+                    };
+                    tokio::spawn(async move {
+                        request_handler(node, request_msg).await;
+                    });
+                }
+                MessageType::Response(response) => {
+                    let callback = node.callbacks.lock().unwrap().remove(&response.in_reply_to);
+                    if let Some(callback) = callback {
+                        callback
+                            .send(Message {
+                                src: msg.src,
+                                dest: msg.dest,
+                                body: response,
+                            })
+                            .unwrap();
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -70,20 +122,17 @@ impl NodeChannel {
         msg
     }
 }
-type InboundRequestHandler<InitialData, State, RequestBody, ResponseBody, F> =
-    fn(Arc<Node<InitialData, State, ResponseBody>>, Message<Request<RequestBody>>) -> F;
 
-pub struct NodeBuilder<InitialData, State> {
+pub struct NodeBuilder<State> {
     node_id: NodeId,
     node_ids: Vec<NodeId>,
-    initial_data: InitialData,
     state: State,
     channel: NodeChannel,
 }
 
-impl NodeBuilder<(), ()> {
+impl NodeBuilder<()> {
     #[must_use]
-    pub fn init() -> NodeBuilder<(), ()> {
+    pub fn init() -> Self {
         let mut channel = NodeChannel {
             buf: String::new(),
             stdin: stdin(),
@@ -91,115 +140,51 @@ impl NodeBuilder<(), ()> {
         };
 
         let msg = channel.receive_msg::<InitRequest>();
+
         let init_reponse = Message {
             src: msg.dest,
             dest: msg.src,
             body: Response {
                 in_reply_to: msg.body.msg_id,
-                kind: InitResponse {},
+                kind: InitResponse::InitOk {},
             },
         };
         channel.send_msg(&init_reponse);
-
-        NodeBuilder {
-            node_id: msg.body.kind.node_id,
-            node_ids: msg.body.kind.node_ids,
-            initial_data: (),
+        let request_body = msg.body.kind.into_inner();
+        Self {
+            node_id: request_body.node_id,
+            node_ids: request_body.node_ids,
             state: (),
             channel,
         }
     }
+
+    #[must_use]
+    pub fn with_state<State>(mut self, init: fn(&mut NodeChannel) -> State) -> NodeBuilder<State>
+    where
+        State: Send + Sync + 'static,
+    {
+        NodeBuilder {
+            node_id: self.node_id,
+            node_ids: self.node_ids,
+            state: init(&mut self.channel),
+            channel: self.channel,
+        }
+    }
 }
 
-impl<InitialData, State> NodeBuilder<InitialData, State>
-where
-    InitialData: Send + Sync + 'static,
-    State: Send + Sync + 'static,
-{
+impl<State> NodeBuilder<State> {
     #[must_use]
-    pub fn with_initial_data<NewInitialData>(
-        mut self,
-        init: fn(&mut NodeChannel) -> NewInitialData,
-    ) -> NodeBuilder<NewInitialData, State>
-    where
-        NewInitialData: Send + Sync + 'static,
-    {
-        NodeBuilder {
-            node_id: self.node_id,
-            node_ids: self.node_ids,
-            initial_data: init(&mut self.channel),
-            state: self.state,
-            channel: self.channel,
-        }
-    }
-
-    pub fn with_state<NewState>(self, state: NewState) -> NodeBuilder<InitialData, NewState>
-    where
-        NewState: Send + Sync + 'static,
-    {
-        NodeBuilder {
-            initial_data: self.initial_data,
-            node_id: self.node_id,
-            node_ids: self.node_ids,
-            state,
-            channel: self.channel,
-        }
-    }
-
-    pub fn run<InboundRequestBody, InboundResponseBody, F>(
+    pub fn build<InboundRequestBody, InboundResponseBody>(
         self,
-        request_handler: InboundRequestHandler<
-            InitialData,
-            State,
-            InboundRequestBody,
-            InboundResponseBody,
-            F,
-        >,
-    ) where
-        InboundRequestBody: DeserializeOwned + Send + Sync + 'static,
-        InboundResponseBody: std::fmt::Debug + DeserializeOwned + Send + Sync + 'static,
-        F: Future<Output = ()> + Send + Sync + 'static,
-    {
-        let node = Arc::new(Node {
-            initial_data: self.initial_data,
+    ) -> Arc<Node<State, InboundRequestBody, InboundResponseBody>> {
+        Arc::new(Node {
             node_id: self.node_id,
             node_ids: self.node_ids,
             state: self.state,
             stdout: self.channel.stdout,
             callbacks: Default::default(),
-        });
-        let mut lines = self.channel.stdin.lines();
-        while let Some(Ok(line)) = lines.next() {
-            let node = node.clone();
-            let msg =
-                Message::<MessageType<InboundRequestBody, InboundResponseBody>>::from_json_str(
-                    &line,
-                );
-            match msg.body {
-                MessageType::Request(request) => {
-                    let request_msg = Message {
-                        src: msg.src,
-                        dest: msg.dest,
-                        body: request,
-                    };
-                    tokio::spawn(async move {
-                        request_handler(node, request_msg).await;
-                    });
-                }
-                MessageType::Response(response) => {
-                    node.callbacks
-                        .lock()
-                        .unwrap()
-                        .remove(&response.in_reply_to)
-                        .unwrap()
-                        .send(Message {
-                            src: msg.src,
-                            dest: msg.dest,
-                            body: response,
-                        })
-                        .unwrap();
-                }
-            }
-        }
+            marker: Default::default(),
+        })
     }
 }

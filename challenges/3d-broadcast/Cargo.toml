@@ -1,14 +1,11 @@
 [package]
-name = "common"
+name = "broadcast-d"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+common = { path = "../../common" }
 tokio = { version = "1.26.0", features = ["full"] }
-serde = { version = "1.0.152", features = ["derive"] }
-serde_repr = "0.1.10"
-serde_json = "1.0.93"
 rustc-hash = "1.1.0"
-indexmap = { git = "https://github.com/bluss/indexmap", features = ["serde"] }

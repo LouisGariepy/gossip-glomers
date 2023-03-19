@@ -18,6 +18,22 @@ pub enum SiteId {
     Node(NodeId),
 }
 
+impl SiteId {
+    pub fn as_client_id(&self) -> Option<&ClientId> {
+        match self {
+            SiteId::Client(client_id) => Some(client_id),
+            SiteId::Node(_) => None,
+        }
+    }
+
+    pub fn as_node_id(&self) -> Option<&NodeId> {
+        match self {
+            SiteId::Client(_) => None,
+            SiteId::Node(node_id) => Some(node_id),
+        }
+    }
+}
+
 impl Serialize for SiteId {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
