@@ -1,7 +1,7 @@
 use std::{env::set_current_dir, path::PathBuf, process::Command};
 
 use anyhow::{anyhow, Context};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(author, long_about = None)]
@@ -21,6 +21,14 @@ enum Challenge {
     BroadcastD {
         #[arg(short, long)]
         partition: bool,
+        #[arg(default_value_t = Topology::Tree4)]
+        topology: Topology,
+    },
+    BroadcastE {
+        #[arg(short, long)]
+        partition: bool,
+        #[arg(default_value_t = Topology::Tree4)]
+        topology: Topology,
     },
 }
 
@@ -33,6 +41,36 @@ impl Challenge {
             Challenge::BroadcastB => "broadcast-b",
             Challenge::BroadcastC => "broadcast-c",
             Challenge::BroadcastD { .. } => "broadcast-d",
+            Challenge::BroadcastE { .. } => "broadcast-e",
+        }
+    }
+}
+
+impl std::fmt::Display for Topology {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.as_str(), f)
+    }
+}
+
+#[derive(Clone, ValueEnum)]
+enum Topology {
+    Grid,
+    Line,
+    Total,
+    Tree2,
+    Tree3,
+    Tree4,
+}
+
+impl Topology {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Topology::Grid => "grid",
+            Topology::Line => "line",
+            Topology::Total => "total",
+            Topology::Tree2 => "tree2",
+            Topology::Tree3 => "tree3",
+            Topology::Tree4 => "tree4",
         }
     }
 }
@@ -105,7 +143,10 @@ fn main() -> anyhow::Result<()> {
             .args(["--time-limit", "20"])
             .args(["--rate", "10"])
             .args(["--nemesis", "partition"]),
-        Challenge::BroadcastD { partition } => {
+        Challenge::BroadcastD {
+            partition,
+            topology,
+        } => {
             let c = command
                 .arg("test")
                 .args(["-w", "broadcast"])
@@ -113,12 +154,30 @@ fn main() -> anyhow::Result<()> {
                 .args(["--node-count", "25"])
                 .args(["--time-limit", "20"])
                 .args(["--rate", "100"])
-                .args(["--latency", "100"]);
+                .args(["--latency", "100"])
+                .args(["--topology", topology.as_str()]);
             if partition {
-                c.args(["--nemesis", "partition"])
-            } else {
-                c
-            }
+                c.args(["--nemesis", "partition"]);
+            };
+            c
+        }
+        Challenge::BroadcastE {
+            partition,
+            topology,
+        } => {
+            let c = command
+                .arg("test")
+                .args(["-w", "broadcast"])
+                .args(["--bin", &binary_path.to_string_lossy()])
+                .args(["--node-count", "25"])
+                .args(["--time-limit", "20"])
+                .args(["--rate", "100"])
+                .args(["--latency", "100"])
+                .args(["--topology", topology.as_str()]);
+            if partition {
+                c.args(["--nemesis", "partition"]);
+            };
+            c
         }
     };
 

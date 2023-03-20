@@ -23,29 +23,34 @@ async fn main() {
             match msg.body.kind {
                 InboundBroadcastRequest::Broadcast { message } => {
                     node.state.messages.lock().unwrap().insert(message);
-                    node.send_msg(&Message {
-                        src: msg.dest,
-                        dest: msg.src,
-                        body: Response {
-                            in_reply_to: msg.body.msg_id,
-                            kind: OutboundBroadcastResponse::BroadcastOk {},
-                        },
-                    });
+                    node.send_msg(
+                        &Message {
+                            src: msg.dest,
+                            dest: msg.src,
+                            body: Response {
+                                in_reply_to: msg.body.msg_id,
+                                kind: OutboundBroadcastResponse::BroadcastOk {},
+                            },
+                        }
+                        .to_json(),
+                    );
                 }
                 InboundBroadcastRequest::Read {} => {
-                    let messages = &node.state.messages.lock().unwrap();
-                    let ser_msg = Message {
-                        src: msg.dest,
-                        dest: msg.src,
-                        body: Response {
-                            in_reply_to: msg.body.msg_id,
-                            kind: OutboundBroadcastResponse::ReadOk { messages },
-                        },
-                    }
-                    .to_json();
-                    node.send_msg(ser_msg);
+                    node.send_msg(
+                        &Message {
+                            src: msg.dest,
+                            dest: msg.src,
+                            body: Response {
+                                in_reply_to: msg.body.msg_id,
+                                kind: OutboundBroadcastResponse::ReadOk {
+                                    messages: &node.state.messages.lock().unwrap(),
+                                },
+                            },
+                        }
+                        .to_json(),
+                    );
                 }
-                InboundBroadcastRequest::Healing { .. } => unreachable!(),
+                InboundBroadcastRequest::BroadcastMany { .. } => unreachable!(),
             }
         });
 }

@@ -12,8 +12,8 @@ use common::{
         InboundBroadcastRequest, InboundBroadcastResponse, Message, OutboundBroadcastRequest,
         OutboundBroadcastResponse, Request, Response, TopologyRequest, TopologyResponse,
     },
-    node::{Node, NodeBuilder, NodeChannel},
-    FxIndexSet, Json,
+    node::{NodeBuilder, NodeChannel},
+    FxIndexSet,
 };
 use rustc_hash::FxHashMap;
 
@@ -36,6 +36,7 @@ async fn main() {
         .with_state(initialize_node)
         .build::<InboundBroadcastRequest, InboundBroadcastResponse>();
 
+    // Background healing task
     let node_clone = node.clone();
     tokio::spawn(async move {
         let node = node_clone;
@@ -70,7 +71,7 @@ async fn main() {
                             dest: SiteId::Node(neighbour_id),
                             body: Request {
                                 msg_id,
-                                kind: OutboundBroadcastRequest::Healing { messages },
+                                kind: OutboundBroadcastRequest::BroadcastMany { messages },
                             },
                         }
                         .to_json()
@@ -81,7 +82,7 @@ async fn main() {
 
                     // If the response is a HealthCheckOK message, remove the timeout timestamp
                     if let Some(response) = response {
-                        if let InboundBroadcastResponse::HealingOk {} = response.body.kind {
+                        if let InboundBroadcastResponse::BroadcastManyOk {} = response.body.kind {
                             *node
                                 .state
                                 .timeout_timestamps
@@ -99,16 +100,24 @@ async fn main() {
     node.run(|node, msg| async move {
         match msg.body.kind {
             InboundBroadcastRequest::Broadcast { message } => {
-                // Try to insert new message in the node's message list
+                // Try to insert the new message in the node's message list
                 let (old_len, inserted) = {
                     let mut node_messages_guard = node.state.messages.lock().unwrap();
                     let old_len = node_messages_guard.len();
                     let inserted = node_messages_guard.insert(message);
                     (old_len, inserted)
                 };
+                // If the message was inserted (i.e. it was not already known to this node)
+                // start broadcasting procedure
                 if inserted {
-                    // Broadcast to all neighbouring nodes
-                    for neighbour in &node.state.neighbours {
+                    // Don't broadcast it to the node who just broadcasted it to us though.
+                    let susceptible_neighbours = node
+                        .state
+                        .neighbours
+                        .iter()
+                        .filter(|&&neighbour_id| SiteId::Node(neighbour_id) != msg.src);
+                    // Broadcast to all susceptible neighbours
+                    for neighbour in susceptible_neighbours {
                         let node = node.clone();
                         let neighbour = *neighbour;
                         tokio::spawn(async move {
@@ -142,30 +151,34 @@ async fn main() {
                         });
                     }
                 }
-                node.send_msg(&Message {
-                    src: msg.dest,
-                    dest: msg.src,
-                    body: Response {
-                        in_reply_to: msg.body.msg_id,
-                        kind: OutboundBroadcastResponse::BroadcastOk {},
-                    },
-                });
+                node.send_msg(
+                    &Message {
+                        src: msg.dest,
+                        dest: msg.src,
+                        body: Response {
+                            in_reply_to: msg.body.msg_id,
+                            kind: OutboundBroadcastResponse::BroadcastOk {},
+                        },
+                    }
+                    .to_json(),
+                );
             }
             InboundBroadcastRequest::Read {} => {
-                let ser_msg = Message {
-                    src: msg.dest,
-                    dest: msg.src,
-                    body: Response {
-                        in_reply_to: msg.body.msg_id,
-                        kind: OutboundBroadcastResponse::ReadOk {
-                            messages: &node.state.messages.lock().unwrap(),
+                node.send_msg(
+                    &Message {
+                        src: msg.dest,
+                        dest: msg.src,
+                        body: Response {
+                            in_reply_to: msg.body.msg_id,
+                            kind: OutboundBroadcastResponse::ReadOk {
+                                messages: &node.state.messages.lock().unwrap(),
+                            },
                         },
-                    },
-                }
-                .to_json();
-                node.send_msg(ser_msg);
+                    }
+                    .to_json(),
+                );
             }
-            InboundBroadcastRequest::Healing {
+            InboundBroadcastRequest::BroadcastMany {
                 messages: healing_messages,
             } => {
                 let (old_len, inserted) = {
@@ -181,9 +194,14 @@ async fn main() {
                     (old_len, inserted)
                 };
                 if inserted {
+                    let susceptible_neighbours = node
+                        .state
+                        .neighbours
+                        .iter()
+                        .filter(|&&neighbour_id| SiteId::Node(neighbour_id) != msg.src);
                     // Broadcast to all neighbouring nodes
                     let healing_messages = Arc::new(healing_messages);
-                    for neighbour in &node.state.neighbours {
+                    for neighbour in susceptible_neighbours {
                         let node = node.clone();
                         let healing_messages = healing_messages.clone();
                         let neighbour = *neighbour;
@@ -196,7 +214,7 @@ async fn main() {
                                 dest: SiteId::Node(neighbour),
                                 body: Request {
                                     msg_id,
-                                    kind: OutboundBroadcastRequest::Healing {
+                                    kind: OutboundBroadcastRequest::BroadcastMany {
                                         messages: &healing_messages[..],
                                     },
                                 },
@@ -220,14 +238,17 @@ async fn main() {
                         });
                     }
                 }
-                node.send_msg(&Message {
-                    src: msg.dest,
-                    dest: msg.src,
-                    body: Response {
-                        in_reply_to: msg.body.msg_id,
-                        kind: OutboundBroadcastResponse::HealingOk {},
-                    },
-                })
+                node.send_msg(
+                    &Message {
+                        src: msg.dest,
+                        dest: msg.src,
+                        body: Response {
+                            in_reply_to: msg.body.msg_id,
+                            kind: OutboundBroadcastResponse::BroadcastManyOk {},
+                        },
+                    }
+                    .to_json(),
+                )
             }
         }
     });
@@ -268,36 +289,5 @@ fn initialize_node(channel: &mut NodeChannel) -> NodeState {
         messages: Default::default(),
         neighbours,
         timeout_timestamps: failed_broadcasts,
-    }
-}
-
-fn gossip(
-    node: Arc<Node<NodeState, InboundBroadcastRequest, InboundBroadcastResponse>>,
-    msg: Json,
-) {
-    let msg = Arc::new(msg);
-    // Broadcast to all neighbouring nodes
-    for neighbour in &node.state.neighbours {
-        let node = node.clone();
-        let msg = msg.clone();
-        let neighbour = *neighbour;
-        tokio::spawn(async move {
-            // Build RPC request
-            let neighbour = neighbour;
-            let msg_id = node.state.next_msg_id();
-
-            // Send RPC request
-            let response = node.rpc(msg_id, &msg).await;
-
-            // If the RPC request timed out, record the latest message's index
-            // in the map entry for this neighbour.
-            if response.is_none() {
-                let mut timeout_timestamps_guard = node.state.timeout_timestamps.lock().unwrap();
-                let timeout_timestamp = timeout_timestamps_guard.get_mut(&neighbour).unwrap();
-                if timeout_timestamp.is_none() {
-                    *timeout_timestamp = Some(node.state.messages.lock().unwrap().len());
-                }
-            }
-        });
     }
 }

@@ -102,7 +102,7 @@ define_msg_kind!(
         Broadcast {
             message: u64,
         },
-        Healing {
+        BroadcastMany {
             messages: &'a indexmap::set::Slice<u64>,
         },
     }
@@ -113,7 +113,7 @@ define_msg_kind!(
     pub enum InboundBroadcastRequest {
         Read {},
         Broadcast { message: u64 },
-        Healing { messages: FxIndexSet<u64> },
+        BroadcastMany { messages: FxIndexSet<u64> },
     }
 );
 
@@ -122,7 +122,7 @@ define_msg_kind!(
     pub enum OutboundBroadcastResponse<'a> {
         ReadOk { messages: &'a FxIndexSet<u64> },
         BroadcastOk {},
-        HealingOk {},
+        BroadcastManyOk {},
     }
 );
 
@@ -131,7 +131,7 @@ define_msg_kind!(
     pub enum InboundBroadcastResponse {
         ReadOk { messages: FxIndexSet<u64> },
         BroadcastOk {},
-        HealingOk {},
+        BroadcastManyOk {},
     }
 );
 

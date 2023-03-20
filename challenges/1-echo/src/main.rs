@@ -8,15 +8,18 @@ async fn main() {
     NodeBuilder::init()
         .build::<EchoRequest, ()>()
         .run(|node, msg| async move {
-            node.send_msg(&Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: Response {
-                    in_reply_to: msg.body.msg_id,
-                    kind: EchoResponse::EchoOk(EchoOk {
-                        echo: msg.body.kind.into_inner().echo,
-                    }),
-                },
-            })
+            node.send_msg(
+                &Message {
+                    src: msg.dest,
+                    dest: msg.src,
+                    body: Response {
+                        in_reply_to: msg.body.msg_id,
+                        kind: EchoResponse::EchoOk(EchoOk {
+                            echo: msg.body.kind.into_inner().echo,
+                        }),
+                    },
+                }
+                .to_json(),
+            )
         });
 }
