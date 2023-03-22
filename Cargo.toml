@@ -1,3 +1,7 @@
 [workspace]
 members = ["runner", "common", "challenges/*"]
 default-members = ["runner"]
+
+[workspace.dependencies]
+serde = { version = "1.0.156", features = ["derive"] }
+tokio = { version = "1.26.0", features = ["full"] }

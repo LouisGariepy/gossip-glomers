@@ -76,17 +76,17 @@ impl Topology {
 }
 
 fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    let binary_name = cli.challenge.as_str();
+
     Command::new("cargo")
         .arg("build")
-        .arg("--all")
+        .args(["-p", binary_name])
         .arg("--release")
         .spawn()
         .context("could not build challenges")?
         .wait()
         .context("error while waiting on build process")?;
-
-    let cli = Cli::parse();
-    let binary_name = cli.challenge.as_str();
 
     let binary_path = PathBuf::from("target/release")
         .join(binary_name)

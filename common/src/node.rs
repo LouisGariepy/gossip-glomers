@@ -2,7 +2,7 @@ use std::{
     future::Future,
     io::{stdin, stdout, Stdin, Stdout, Write},
     marker::PhantomData,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 
@@ -11,21 +11,21 @@ use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::oneshot;
 
 use crate::{
-    id::{MessageId, NodeId},
-    json::Json,
+    id::{MessageId, NodeId, SiteId},
     message::{InitRequest, InitResponse, Message, MessageType, Request, Response},
+    Json,
 };
 
 /// Type that allows RPC tasks to be awoken.
-type RpcCallback<InboundResponseBody> = oneshot::Sender<Message<Response<InboundResponseBody>>>;
+type RpcCallback<IRes> = oneshot::Sender<Message<Response<IRes>>>;
 
 /// Type for the function that handles a [`Node`]'s inbound requests.
-type InboundRequestHandler<State, RequestBody, ResponseBody, F> =
-    fn(Arc<Node<State, RequestBody, ResponseBody>>, Message<Request<RequestBody>>) -> F;
+type InboundRequestHandler<State, IReq, ORes, OReq, IRes, F> =
+    fn(Arc<Node<State, IReq, ORes, OReq, IRes>>, Message<Request<IReq>>) -> F;
 
 /// A node abstraction. The main main item provided by this module. Nodes can hold
 /// state, receive and send messages
-pub struct Node<State, InboundRequestBody, InboundResponseBody> {
+pub struct Node<State, IReq, ORes, OReq, IRes> {
     /// This [`Node`]'s ID.
     pub node_id: NodeId,
     /// The list of all participating [`Node`] IDs.
@@ -34,35 +34,118 @@ pub struct Node<State, InboundRequestBody, InboundResponseBody> {
     pub state: State,
     /// A map containing [`RpcCallback`]s, identified by the
     /// [`MessageId`] of the corresponding RPC request.
-    pub rpc_callbacks: Mutex<FxHashMap<MessageId, RpcCallback<InboundResponseBody>>>,
+    pub rpc_callbacks: Mutex<FxHashMap<MessageId, RpcCallback<IRes>>>,
     /// Standard output. Allows nodes to send messages.
     stdout: Stdout,
-    /// Zero-sized marker used to make the generic bounds more ergonomic for users.
-    marker: PhantomData<InboundRequestBody>,
+    /// Zero-sized markers used to make the generic bounds more ergonomic for users.
+    phantom_ireq: PhantomData<fn(IReq)>,
+    phantom_ores: PhantomData<fn() -> ORes>,
+    phantom_oreq: PhantomData<fn() -> OReq>,
 }
 
-impl<State, InboundRequestBody, InboundResponseBody>
-    Node<State, InboundRequestBody, InboundResponseBody>
+impl<State, IReq, ORes, OReq, IRes> Node<State, IReq, ORes, OReq, IRes>
 where
-    InboundRequestBody: DeserializeOwned + Send + Sync + 'static,
-    InboundResponseBody: std::fmt::Debug + DeserializeOwned + Send + Sync + 'static,
+    IReq: DeserializeOwned,
+    ORes: Serialize,
+    OReq: Serialize + LifetimeGeneric,
+    for<'a> OReq::Me<'a>: Serialize,
+    IRes: std::fmt::Debug + DeserializeOwned + Send + Sync + 'static,
     State: Send + Sync + 'static,
 {
-    /// Writes a JSON message on a single line over STDOUT.
-    pub fn send_msg(&self, msg: &Json) {
-        writeln!(self.stdout.lock(), "{}", msg.as_str()).unwrap();
+    // /// Writes a JSON message on a single line over STDOUT.
+    // pub fn send_msg(&self, msg: &Json) {
+    //     writeln!(self.stdout.lock(), "{}", msg.as_str()).unwrap();
+    // }
+
+    // pub async fn rpc(
+    //     &self,
+    //     msg_id: MessageId,
+    //     msg: &Json,
+    // ) -> Option<Message<Response<IRes>>> {
+    //     let (sender, receiver) = oneshot::channel();
+    //     // Insert a new callback
+    //     self.rpc_callbacks.lock().unwrap().insert(msg_id, sender);
+    //     // Send RPC request
+    //     writeln!(self.stdout.lock(), "{}", msg.as_str()).unwrap();
+    //     // Wait to receive response
+    //     let result = match tokio::time::timeout(Duration::from_secs(3), receiver).await {
+    //         // Response received
+    //         Ok(msg) => Some(msg.unwrap()),
+    //         // Timeout
+    //         Err(_) => None,
+    //     };
+    //     // Remove callback and return result
+    //     self.rpc_callbacks.lock().unwrap().remove(&msg_id);
+    //     result
+    // }
+
+    pub fn send_response(&self, msg: Message<Response<ORes>>) {
+        let msg_json = msg.into_json();
+        writeln!(self.stdout.lock(), "{}", msg_json).unwrap();
     }
 
-    pub async fn rpc(
-        &self,
-        msg_id: MessageId,
-        msg: &Json,
-    ) -> Option<Message<Response<InboundResponseBody>>> {
+    // pub fn send_request<T: Serialize>(&self, msg: Message<Request<T>>) {
+    //     let msg_json = {
+    //         let msg = msg;
+    //         msg.to_json()
+    //     };
+    //     writeln!(self.stdout.lock(), "{}", msg_json).unwrap();
+    // }
+
+    pub async fn rpc2(&self, msg: Message<Request<OReq>>) -> Option<Message<Response<IRes>>> {
+        let msg_id = msg.body.msg_id;
+        let msg_json = msg.into_json();
         let (sender, receiver) = oneshot::channel();
         // Insert a new callback
         self.rpc_callbacks.lock().unwrap().insert(msg_id, sender);
         // Send RPC request
-        writeln!(self.stdout.lock(), "{}", msg.as_str()).unwrap();
+        writeln!(self.stdout.lock(), "{}", msg_json).unwrap();
+        // Wait to receive response
+        let result = match tokio::time::timeout(Duration::from_secs(3), receiver).await {
+            // Response received
+            Ok(msg) => Some(msg.unwrap()),
+            // Timeout
+            Err(_) => None,
+        };
+        // Remove callback and return result
+        self.rpc_callbacks.lock().unwrap().remove(&msg_id);
+        result
+    }
+
+    // pub async fn rpc2_ser<T>(&self, ser_req: Json) -> Option<Message<Response<IRes>>> {
+    //     self.rpc2(Message {
+    //         src,
+    //         dest,
+    //         body: Request {
+    //             msg_id,
+    //             kind: map(body),
+    //         },
+    //     })
+    //     .await
+    // }
+
+    pub async fn rpc2_with<T>(
+        &self,
+        src: SiteId,
+        dest: SiteId,
+        msg_id: MessageId,
+        body: T,
+        map2: impl for<'a> FnOnce(&'a T) -> OReq::Me<'a>,
+    ) -> Option<Message<Response<IRes>>> {
+        let msg = Message {
+            src,
+            dest,
+            body: Request {
+                msg_id,
+                kind: map2(&body),
+            },
+        };
+        let msg_json = msg.into_json();
+        let (sender, receiver) = oneshot::channel();
+        // Insert a new callback
+        self.rpc_callbacks.lock().unwrap().insert(msg_id, sender);
+        // Send RPC request
+        writeln!(self.stdout.lock(), "{}", msg_json).unwrap();
         // Wait to receive response
         let result = match tokio::time::timeout(Duration::from_secs(3), receiver).await {
             // Response received
@@ -82,35 +165,29 @@ where
     /// wakes the RPC task by sending the response over the registered callback.
     pub fn run<F>(
         self: Arc<Self>,
-        request_handler: InboundRequestHandler<State, InboundRequestBody, InboundResponseBody, F>,
+        request_handler: InboundRequestHandler<State, IReq, ORes, OReq, IRes, F>,
     ) where
-        F: Future<Output = ()> + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + 'static,
     {
         // Read lines from STDIN
         let mut lines = stdin().lines();
         while let Some(Ok(line)) = lines.next() {
             eprintln!("{line}");
             // Deserialize line into message
-            let msg =
-                Message::<MessageType<InboundRequestBody, InboundResponseBody>>::from_json_str(
-                    &line,
-                );
+            let msg = Message::<MessageType<IReq, IRes>>::from_json_str(&line);
             // Check if message was a request or a response
             match msg.body {
                 // Request are handled by the request handler in a separate task
                 MessageType::Request(request) => {
                     let node = self.clone();
-                    tokio::spawn(async move {
-                        request_handler(
-                            node,
-                            Message {
-                                src: msg.src,
-                                dest: msg.dest,
-                                body: request,
-                            },
-                        )
-                        .await;
-                    });
+                    tokio::spawn(request_handler(
+                        node,
+                        Message {
+                            src: msg.src,
+                            dest: msg.dest,
+                            body: request,
+                        },
+                    ));
                 }
                 // Response are sent to RPC tasks via a callback
                 MessageType::Response(response) => {
@@ -218,14 +295,17 @@ impl NodeBuilder<()> {
     /// this builder will create. This method can be used to handle initial message exchanges
     /// that are required to set the state.
     #[must_use]
-    pub fn with_state<State>(mut self, init: fn(&mut NodeChannel) -> State) -> NodeBuilder<State>
+    pub fn with_state<State>(
+        mut self,
+        init: fn(node_id: &NodeId, &mut NodeChannel) -> State,
+    ) -> NodeBuilder<State>
     where
         State: Send + Sync + 'static,
     {
         NodeBuilder {
-            node_id: self.node_id,
             node_ids: self.node_ids,
-            state: init(&mut self.channel),
+            state: init(&self.node_id, &mut self.channel),
+            node_id: self.node_id,
             channel: self.channel,
         }
     }
@@ -235,16 +315,20 @@ impl<State> NodeBuilder<State> {
     /// Consumes this builder and creates a [`Node`].
     /// The [`Node`] will inherit this builder's state.
     #[must_use]
-    pub fn build<InboundRequestBody, InboundResponseBody>(
-        self,
-    ) -> Arc<Node<State, InboundRequestBody, InboundResponseBody>> {
+    pub fn build<IReq, ORes, OReq, IRes>(self) -> Arc<Node<State, IReq, ORes, OReq, IRes>> {
         Arc::new(Node {
             node_id: self.node_id,
             node_ids: self.node_ids,
             state: self.state,
             stdout: self.channel.stdout,
             rpc_callbacks: Default::default(),
-            marker: Default::default(),
+            phantom_ireq: PhantomData,
+            phantom_ores: PhantomData,
+            phantom_oreq: PhantomData,
         })
     }
+}
+
+pub trait LifetimeGeneric {
+    type Me<'a>;
 }

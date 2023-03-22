@@ -1,13 +1,13 @@
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use common::{
-    message::{
-        InboundBroadcastRequest, Message, OutboundBroadcastResponse, Response, TopologyRequest,
-        TopologyResponse,
-    },
-    node::{NodeBuilder, NodeChannel},
+    define_msg_kind,
+    id::NodeId,
+    message::{Message, Response, TopologyRequest, TopologyResponse},
+    node::{LifetimeGeneric, NodeBuilder, NodeChannel},
     FxIndexSet,
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default)]
 struct NodeState {
@@ -18,44 +18,37 @@ struct NodeState {
 async fn main() {
     NodeBuilder::init()
         .with_state(initialize_node)
-        .build::<InboundBroadcastRequest, ()>()
+        .build::<BroadcastRequest, BroadcastResponse, (), ()>()
         .run(|node, msg| async move {
             match msg.body.kind {
-                InboundBroadcastRequest::Broadcast { message } => {
+                BroadcastRequest::Broadcast { message } => {
                     node.state.messages.lock().unwrap().insert(message);
-                    node.send_msg(
-                        &Message {
-                            src: msg.dest,
-                            dest: msg.src,
-                            body: Response {
-                                in_reply_to: msg.body.msg_id,
-                                kind: OutboundBroadcastResponse::BroadcastOk {},
-                            },
-                        }
-                        .to_json(),
-                    );
+                    node.send_response(Message {
+                        src: msg.dest,
+                        dest: msg.src,
+                        body: Response {
+                            in_reply_to: msg.body.msg_id,
+                            kind: BroadcastResponse::BroadcastOk {},
+                        },
+                    });
                 }
-                InboundBroadcastRequest::Read {} => {
-                    node.send_msg(
-                        &Message {
-                            src: msg.dest,
-                            dest: msg.src,
-                            body: Response {
-                                in_reply_to: msg.body.msg_id,
-                                kind: OutboundBroadcastResponse::ReadOk {
-                                    messages: &node.state.messages.lock().unwrap(),
-                                },
+                BroadcastRequest::Read {} => {
+                    node.send_response(Message {
+                        src: msg.dest,
+                        dest: msg.src,
+                        body: Response {
+                            in_reply_to: msg.body.msg_id,
+                            kind: BroadcastResponse::ReadOk {
+                                messages: node.state.messages.lock().unwrap(),
                             },
-                        }
-                        .to_json(),
-                    );
+                        },
+                    });
                 }
-                InboundBroadcastRequest::BroadcastMany { .. } => unreachable!(),
             }
         });
 }
 
-fn initialize_node(channel: &mut NodeChannel) -> NodeState {
+fn initialize_node(_: &NodeId, channel: &mut NodeChannel) -> NodeState {
     let topology_msg = channel.receive_msg::<TopologyRequest>();
     channel.send_msg(&Message {
         src: topology_msg.dest,
@@ -69,3 +62,22 @@ fn initialize_node(channel: &mut NodeChannel) -> NodeState {
         messages: Default::default(),
     }
 }
+
+define_msg_kind!(
+    #[derive(Debug, Deserialize)]
+    pub enum BroadcastRequest {
+        Read {},
+        Broadcast { message: u64 },
+    }
+);
+
+define_msg_kind!(
+    #[derive(Debug, Serialize)]
+    pub enum BroadcastResponse<'a> {
+        ReadOk {
+            #[serde(serialize_with = "common::serialize_guard")]
+            messages: MutexGuard<'a, FxIndexSet<u64>>,
+        },
+        BroadcastOk {},
+    }
+);

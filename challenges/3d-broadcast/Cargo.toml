@@ -7,5 +7,5 @@ edition = "2021"
 
 [dependencies]
 common = { path = "../../common" }
-tokio = { version = "1.26.0", features = ["full"] }
-rustc-hash = "1.1.0"
+serde.workspace = true
+tokio.workspace = true

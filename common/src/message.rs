@@ -5,7 +5,8 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::{
     id::{MessageId, NodeId, SiteId},
-    FxIndexSet, TopologyMap,
+    node::LifetimeGeneric,
+    TopologyMap,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,34 +56,6 @@ define_msg_kind!(
 
 define_msg_kind!(
     #[derive(Debug, Serialize, Deserialize)]
-    pub enum EchoRequest {
-        Echo { echo: String },
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize, Deserialize)]
-    pub enum EchoResponse {
-        EchoOk { echo: String },
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize, Deserialize)]
-    pub enum GenerateRequest {
-        Generate {},
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize, Deserialize)]
-    pub enum GenerateResponse {
-        GenerateOk { id: [u64; 2] },
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize, Deserialize)]
     pub enum TopologyRequest {
         Topology { topology: TopologyMap },
     }
@@ -92,46 +65,6 @@ define_msg_kind!(
     #[derive(Debug, Serialize, Deserialize)]
     pub enum TopologyResponse {
         TopologyOk {},
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize)]
-    pub enum OutboundBroadcastRequest<'a> {
-        Read {},
-        Broadcast {
-            message: u64,
-        },
-        BroadcastMany {
-            messages: &'a indexmap::set::Slice<u64>,
-        },
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Deserialize)]
-    pub enum InboundBroadcastRequest {
-        Read {},
-        Broadcast { message: u64 },
-        BroadcastMany { messages: FxIndexSet<u64> },
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize)]
-    pub enum OutboundBroadcastResponse<'a> {
-        ReadOk { messages: &'a FxIndexSet<u64> },
-        BroadcastOk {},
-        BroadcastManyOk {},
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize, Deserialize)]
-    pub enum InboundBroadcastResponse {
-        ReadOk { messages: FxIndexSet<u64> },
-        BroadcastOk {},
-        BroadcastManyOk {},
     }
 );
 
@@ -151,7 +84,92 @@ pub enum ErrorCode {
     TxnConflict = 30,
 }
 
+// #[macro_export]
+// macro_rules! define_msg_kind {
+//     (
+//         #[derive($($derive:path),*)]
+//         $vis:vis enum $enum_ident:ident {
+//             $variant_ident:ident {
+//                 $($field_ident:ident : $field_ty:ty),+ $(,)?
+//             }$(,)?
+//         }
+//     ) =>
+//     {
+//         #[derive($($derive),*)]
+//         #[serde(tag = "type")]
+//         #[serde(rename_all = "snake_case")]
+//         $vis enum $enum_ident{
+//             $variant_ident($variant_ident),
+//         }
+
+//         #[derive($($derive),*)]
+//         $vis struct $variant_ident {
+//             $($vis $field_ident : $field_ty,)+
+//         }
+
+//         impl $enum_ident {
+//             $vis fn as_inner(&self) -> &$variant_ident {
+//                 match self {
+//                     $enum_ident::$variant_ident(inner) => inner
+//                 }
+//             }
+//             $vis fn into_inner(self) -> $variant_ident {
+//                 match self {
+//                     $enum_ident::$variant_ident(inner) => inner
+//                 }
+//             }
+//         }
+//     };
+//     (
+//         #[derive($($derive:path),*)]
+//         $vis:vis enum $($tokens:tt)*
+//     ) => {
+//         #[derive($($derive),*)]
+//         #[serde(tag = "type")]
+//         #[serde(rename_all = "snake_case")]
+//         $vis enum $($tokens)*
+//     };
+// }
+
+#[macro_export]
 macro_rules! define_msg_kind {
+    (
+        #[derive($($derive:path),*)]
+        $vis:vis enum $enum_ident:ident<$lifetime:lifetime> {
+            $variant_ident:ident {
+                $($field_ident:ident : $field_ty:ty),+ $(,)?
+            }$(,)?
+        }
+    ) => {
+        define_msg_kind!(
+            single_variant,
+            [$($derive),*],
+            $vis,
+            $enum_ident,
+            $lifetime,
+            $variant_ident,
+            $($field_ident : $field_ty),+
+        );
+        impl<'a> LifetimeGeneric for $enum_ident<'a> {
+            type Me<'b> = $enum_ident<'b>;
+        }
+    };
+    (
+        #[derive($($derive:path),*)]
+        $vis:vis enum $enum_ident:ident<$lifetime:lifetime> $($tokens:tt)*
+    ) => {
+        define_msg_kind!(
+            mutliple_variants,
+            [$($derive),*],
+            $vis,
+            $enum_ident,
+            $lifetime,
+            $($tokens)*
+        );
+        impl<'a> LifetimeGeneric for $enum_ident<'a> {
+            type Me<'b> = $enum_ident<'b>;
+        }
+    };
     (
         #[derive($($derive:path),*)]
         $vis:vis enum $enum_ident:ident {
@@ -159,27 +177,64 @@ macro_rules! define_msg_kind {
                 $($field_ident:ident : $field_ty:ty),+ $(,)?
             }$(,)?
         }
-    ) =>
-    {
+    ) => {
+        define_msg_kind!(
+            single_variant,
+            [$($derive),*],
+            $vis,
+            $enum_ident,
+            ,
+            $variant_ident,
+            $($field_ident : $field_ty),+
+        );
+        impl LifetimeGeneric for $enum_ident {
+            type Me<'b> = Self;
+        }
+    };
+    (
+        #[derive($($derive:path),*)]
+        $vis:vis enum $enum_ident:ident $($tokens:tt)*
+    ) => {
+        define_msg_kind!(
+            mutliple_variants,
+            [$($derive),*],
+            $vis,
+            $enum_ident,
+            ,
+            $($tokens)*
+        );
+        impl LifetimeGeneric for $enum_ident {
+            type Me<'b> = Self;
+        }
+    };
+    (
+        single_variant,
+        [$($derive:path),*],
+        $vis:vis,
+        $enum_ident:ident,
+        $($lifetime:lifetime)?,
+        $variant_ident:ident,
+        $($field_ident:ident : $field_ty:ty),+
+    ) => {
         #[derive($($derive),*)]
         #[serde(tag = "type")]
         #[serde(rename_all = "snake_case")]
-        $vis enum $enum_ident{
-            $variant_ident($variant_ident),
+        $vis enum $enum_ident <$($lifetime)?> {
+            $variant_ident($variant_ident<$($lifetime)?>),
         }
 
         #[derive($($derive),*)]
-        $vis struct $variant_ident {
+        $vis struct $variant_ident <$($lifetime)?> {
             $($vis $field_ident : $field_ty,)+
         }
 
-        impl $enum_ident {
+        impl<$($lifetime)?> $enum_ident<$($lifetime)?> {
             $vis fn as_inner(&self) -> &$variant_ident {
                 match self {
                     $enum_ident::$variant_ident(inner) => inner
                 }
             }
-            $vis fn into_inner(self) -> $variant_ident {
+            $vis fn into_inner(self) -> $variant_ident<$($lifetime)?> {
                 match self {
                     $enum_ident::$variant_ident(inner) => inner
                 }
@@ -187,13 +242,21 @@ macro_rules! define_msg_kind {
         }
     };
     (
-        #[derive($($derive:path),*)]
-        $vis:vis enum $($tokens:tt)*
+        mutliple_variants,
+        [$($derive:path),*],
+        $vis:vis,
+        $enum_ident:ident,
+        $($lifetime:lifetime)?,
+        $($tokens:tt)*
     ) => {
         #[derive($($derive),*)]
         #[serde(tag = "type")]
         #[serde(rename_all = "snake_case")]
-        $vis enum $($tokens)*
+        $vis enum $enum_ident <$($lifetime)?> $($tokens)*
     };
 }
-use define_msg_kind;
+pub use define_msg_kind;
+
+impl LifetimeGeneric for () {
+    type Me<'a> = Self;
+}

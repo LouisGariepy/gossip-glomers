@@ -1,26 +1,25 @@
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
     },
     time::Duration,
 };
 
 use common::{
+    define_msg_kind,
     id::{MessageId, NodeId, SiteId},
-    message::{
-        InboundBroadcastRequest, InboundBroadcastResponse, Message, OutboundBroadcastRequest,
-        OutboundBroadcastResponse, Request, Response, TopologyRequest, TopologyResponse,
-    },
-    node::{NodeBuilder, NodeChannel},
-    FxIndexSet,
+    message::{Message, Request, Response, TopologyRequest, TopologyResponse},
+    node::{LifetimeGeneric, NodeBuilder, NodeChannel},
+    FxHashMap, FxIndexSet, IndexSetSlice,
 };
-use rustc_hash::FxHashMap;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Debug, Default)]
 struct NodeState {
     next_msg_id: AtomicU64,
-    messages: Mutex<FxIndexSet<u64>>,
+    messages: AsyncMutex<FxIndexSet<u64>>,
     neighbours: Vec<NodeId>,
     timeout_timestamps: Mutex<FxHashMap<NodeId, Option<usize>>>,
 }
@@ -34,7 +33,7 @@ impl NodeState {
 async fn main() {
     let node = NodeBuilder::init()
         .with_state(initialize_node)
-        .build::<InboundBroadcastRequest, InboundBroadcastResponse>();
+        .build::<InboundBroadcastRequest, OutboundBroadcastResponse, OutboundBroadcastRequest, InboundBroadcastResponse>();
 
     let node_clone = node.clone();
     tokio::spawn(async move {
@@ -60,24 +59,24 @@ async fn main() {
                 let node = node.clone();
                 tokio::spawn(async move {
                     let msg_id = node.state.next_msg_id();
-                    let healthcheck_response_ser = {
-                        // Get outstanding messages since timeout timestamp
-                        let message_guard = &node.state.messages.lock().unwrap();
-                        let messages = &message_guard[timeout_timestamp..];
-                        // Create healthcheck request
-                        Message {
-                            src: SiteId::Node(node.node_id),
-                            dest: SiteId::Node(neighbour_id),
-                            body: Request {
-                                msg_id,
-                                kind: OutboundBroadcastRequest::BroadcastMany { messages },
-                            },
-                        }
-                        .to_json()
-                    };
 
                     // Send RPC request and get response
-                    let response = node.rpc(msg_id, &healthcheck_response_ser).await;
+                    let response = node
+                        .rpc2_with(
+                            SiteId::Node(node.node_id),
+                            SiteId::Node(neighbour_id),
+                            msg_id,
+                            &node.state.messages,
+                            |m| {
+                                async move {
+                                    OutboundBroadcastRequest::BroadcastMany {
+                                        messages: &m.lock().await.as_slice()[timeout_timestamp..],
+                                    }
+                                }
+                                .await
+                            },
+                        )
+                        .await;
 
                     // If the response is a HealthCheckOK message, remove the timeout timestamp
                     if let Some(response) = response {
@@ -122,11 +121,10 @@ async fn main() {
                                     msg_id,
                                     kind: OutboundBroadcastRequest::Broadcast { message },
                                 },
-                            }
-                            .to_json();
+                            };
 
                             // Send RPC request
-                            let response = node.rpc(msg_id, &rpc_msg).await;
+                            let response = node.rpc2(rpc_msg).await;
 
                             // If the RPC request timed out, record the latest message's index
                             // in the map entry for this neighbour.
@@ -142,32 +140,26 @@ async fn main() {
                         });
                     }
                 }
-                node.send_msg(
-                    &Message {
-                        src: msg.dest,
-                        dest: msg.src,
-                        body: Response {
-                            in_reply_to: msg.body.msg_id,
-                            kind: OutboundBroadcastResponse::BroadcastOk {},
-                        },
-                    }
-                    .to_json(),
-                );
+                node.send_response(Message {
+                    src: msg.dest,
+                    dest: msg.src,
+                    body: Response {
+                        in_reply_to: msg.body.msg_id,
+                        kind: OutboundBroadcastResponse::BroadcastOk {},
+                    },
+                });
             }
             InboundBroadcastRequest::Read {} => {
-                node.send_msg(
-                    &Message {
-                        src: msg.dest,
-                        dest: msg.src,
-                        body: Response {
-                            in_reply_to: msg.body.msg_id,
-                            kind: OutboundBroadcastResponse::ReadOk {
-                                messages: &node.state.messages.lock().unwrap(),
-                            },
+                node.send_response(Message {
+                    src: msg.dest,
+                    dest: msg.src,
+                    body: Response {
+                        in_reply_to: msg.body.msg_id,
+                        kind: OutboundBroadcastResponse::ReadOk {
+                            messages: node.state.messages.lock().unwrap(),
                         },
-                    }
-                    .to_json(),
-                );
+                    },
+                });
             }
             InboundBroadcastRequest::BroadcastMany {
                 messages: healing_messages,
@@ -195,20 +187,20 @@ async fn main() {
                             // Build RPC request
                             let neighbour = neighbour;
                             let msg_id = node.state.next_msg_id();
-                            let rpc_msg = Message {
-                                src: msg.dest,
-                                dest: SiteId::Node(neighbour),
-                                body: Request {
-                                    msg_id,
-                                    kind: OutboundBroadcastRequest::BroadcastMany {
-                                        messages: &healing_messages[..],
-                                    },
-                                },
-                            }
-                            .to_json();
 
                             // Send RPC request
-                            let response = node.rpc(msg_id, &rpc_msg).await;
+                            let response = node
+                                .rpc2(Message {
+                                    src: msg.dest,
+                                    dest: SiteId::Node(neighbour),
+                                    body: Request {
+                                        msg_id,
+                                        kind: OutboundBroadcastRequest::BroadcastMany {
+                                            messages: healing_messages.as_slice(),
+                                        },
+                                    },
+                                })
+                                .await;
 
                             // If the RPC request timed out, record the latest message's index
                             // in the map entry for this neighbour.
@@ -224,23 +216,20 @@ async fn main() {
                         });
                     }
                 }
-                node.send_msg(
-                    &Message {
-                        src: msg.dest,
-                        dest: msg.src,
-                        body: Response {
-                            in_reply_to: msg.body.msg_id,
-                            kind: OutboundBroadcastResponse::BroadcastManyOk {},
-                        },
-                    }
-                    .to_json(),
-                )
+                node.send_response(Message {
+                    src: msg.dest,
+                    dest: msg.src,
+                    body: Response {
+                        in_reply_to: msg.body.msg_id,
+                        kind: OutboundBroadcastResponse::BroadcastManyOk {},
+                    },
+                })
             }
         }
     });
 }
 
-fn initialize_node(channel: &mut NodeChannel) -> NodeState {
+fn initialize_node(node_id: &NodeId, channel: &mut NodeChannel) -> NodeState {
     // Receive and respond to initial topology message
     let topology_request = channel.receive_msg::<TopologyRequest>();
     let topology_response = Message {
@@ -255,10 +244,6 @@ fn initialize_node(channel: &mut NodeChannel) -> NodeState {
 
     // Obtain node neighbours from topology
     let mut topology = topology_request.body.kind.into_inner().topology;
-    let node_id = topology_request
-        .dest
-        .as_node_id()
-        .expect("expected this process to be a node");
     let neighbours = topology
         .remove(node_id)
         .expect("the topology should include this node's neighbours");
@@ -277,3 +262,42 @@ fn initialize_node(channel: &mut NodeChannel) -> NodeState {
         timeout_timestamps: failed_broadcasts,
     }
 }
+
+define_msg_kind!(
+    #[derive(Debug, Deserialize)]
+    pub enum InboundBroadcastRequest {
+        Read {},
+        Broadcast { message: u64 },
+        BroadcastMany { messages: FxIndexSet<u64> },
+    }
+);
+
+define_msg_kind!(
+    #[derive(Debug, Serialize)]
+    pub enum OutboundBroadcastResponse<'a> {
+        ReadOk {
+            #[serde(serialize_with = "common::serialize_guard")]
+            messages: MutexGuard<'a, FxIndexSet<u64>>,
+        },
+        BroadcastOk {},
+        BroadcastManyOk {},
+    }
+);
+
+define_msg_kind!(
+    #[derive(Debug, Serialize)]
+    pub enum OutboundBroadcastRequest<'a> {
+        Read {},
+        Broadcast { message: u64 },
+        BroadcastMany { messages: &'a IndexSetSlice<u64> },
+    }
+);
+
+define_msg_kind!(
+    #[derive(Debug, Serialize, Deserialize)]
+    pub enum InboundBroadcastResponse {
+        ReadOk { messages: FxIndexSet<u64> },
+        BroadcastOk {},
+        BroadcastManyOk {},
+    }
+);

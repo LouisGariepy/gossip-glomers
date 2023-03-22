@@ -18,6 +18,36 @@ pub enum SiteId {
     Node(NodeId),
 }
 
+impl PartialEq<ClientId> for SiteId {
+    fn eq(&self, other: &ClientId) -> bool {
+        match self {
+            SiteId::Client(client_id) => client_id == other,
+            SiteId::Node(_) => false,
+        }
+    }
+}
+
+impl PartialEq<SiteId> for ClientId {
+    fn eq(&self, other: &SiteId) -> bool {
+        other == self
+    }
+}
+
+impl PartialEq<NodeId> for SiteId {
+    fn eq(&self, other: &NodeId) -> bool {
+        match self {
+            SiteId::Client(_) => false,
+            SiteId::Node(node_id) => node_id == other,
+        }
+    }
+}
+
+impl PartialEq<SiteId> for NodeId {
+    fn eq(&self, other: &SiteId) -> bool {
+        other == self
+    }
+}
+
 impl SiteId {
     pub fn as_client_id(&self) -> Option<&ClientId> {
         match self {

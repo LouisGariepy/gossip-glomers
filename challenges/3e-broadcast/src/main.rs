@@ -13,9 +13,8 @@ use common::{
         OutboundBroadcastResponse, Request, Response, TopologyRequest, TopologyResponse,
     },
     node::{Node, NodeBuilder, NodeChannel},
-    FxIndexSet,
+    FxHashMap, FxIndexSet,
 };
-use rustc_hash::FxHashMap;
 
 type BroadcastNode = Node<NodeState, InboundBroadcastRequest, InboundBroadcastResponse>;
 

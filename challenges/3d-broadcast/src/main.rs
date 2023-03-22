@@ -13,9 +13,8 @@ use common::{
         OutboundBroadcastResponse, Request, Response, TopologyRequest, TopologyResponse,
     },
     node::{NodeBuilder, NodeChannel},
-    FxIndexSet,
+    FxHashMap, FxIndexSet,
 };
-use rustc_hash::FxHashMap;
 
 #[derive(Debug, Default)]
 struct NodeState {
