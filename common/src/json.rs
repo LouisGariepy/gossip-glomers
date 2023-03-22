@@ -25,26 +25,9 @@ impl<'de, Body: Deserialize<'de>> Message<Body> {
     }
 }
 
-impl Debug for Json {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(&self.0, f)
-    }
-}
-impl Display for Json {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)
-    }
-}
-
 impl Json {
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-}
-
-impl<Body: Serialize> From<&Message<Body>> for Json {
-    fn from(value: &Message<Body>) -> Self {
-        value.to_json()
     }
 }
 

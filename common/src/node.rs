@@ -2,7 +2,7 @@ use std::{
     future::Future,
     io::{stdin, stdout, Stdin, Stdout, Write},
     marker::PhantomData,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -11,7 +11,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::oneshot;
 
 use crate::{
-    id::{MessageId, NodeId, SiteId},
+    id::{MessageId, NodeId},
     message::{InitRequest, InitResponse, Message, MessageType, Request, Response},
     Json,
 };
@@ -47,105 +47,33 @@ impl<State, IReq, ORes, OReq, IRes> Node<State, IReq, ORes, OReq, IRes>
 where
     IReq: DeserializeOwned,
     ORes: Serialize,
-    OReq: Serialize + LifetimeGeneric,
-    for<'a> OReq::Me<'a>: Serialize,
+    OReq: Serialize,
     IRes: std::fmt::Debug + DeserializeOwned + Send + Sync + 'static,
     State: Send + Sync + 'static,
 {
-    // /// Writes a JSON message on a single line over STDOUT.
-    // pub fn send_msg(&self, msg: &Json) {
-    //     writeln!(self.stdout.lock(), "{}", msg.as_str()).unwrap();
-    // }
-
-    // pub async fn rpc(
-    //     &self,
-    //     msg_id: MessageId,
-    //     msg: &Json,
-    // ) -> Option<Message<Response<IRes>>> {
-    //     let (sender, receiver) = oneshot::channel();
-    //     // Insert a new callback
-    //     self.rpc_callbacks.lock().unwrap().insert(msg_id, sender);
-    //     // Send RPC request
-    //     writeln!(self.stdout.lock(), "{}", msg.as_str()).unwrap();
-    //     // Wait to receive response
-    //     let result = match tokio::time::timeout(Duration::from_secs(3), receiver).await {
-    //         // Response received
-    //         Ok(msg) => Some(msg.unwrap()),
-    //         // Timeout
-    //         Err(_) => None,
-    //     };
-    //     // Remove callback and return result
-    //     self.rpc_callbacks.lock().unwrap().remove(&msg_id);
-    //     result
-    // }
+    pub fn serialize(&self, req: Message<Request<OReq>>) -> Json {
+        req.into_json()
+    }
 
     pub fn send_response(&self, msg: Message<Response<ORes>>) {
         let msg_json = msg.into_json();
-        writeln!(self.stdout.lock(), "{}", msg_json).unwrap();
+        writeln!(self.stdout.lock(), "{}", msg_json.as_str()).unwrap();
     }
 
-    // pub fn send_request<T: Serialize>(&self, msg: Message<Request<T>>) {
-    //     let msg_json = {
-    //         let msg = msg;
-    //         msg.to_json()
-    //     };
-    //     writeln!(self.stdout.lock(), "{}", msg_json).unwrap();
-    // }
-
-    pub async fn rpc2(&self, msg: Message<Request<OReq>>) -> Option<Message<Response<IRes>>> {
-        let msg_id = msg.body.msg_id;
-        let msg_json = msg.into_json();
-        let (sender, receiver) = oneshot::channel();
-        // Insert a new callback
-        self.rpc_callbacks.lock().unwrap().insert(msg_id, sender);
-        // Send RPC request
-        writeln!(self.stdout.lock(), "{}", msg_json).unwrap();
-        // Wait to receive response
-        let result = match tokio::time::timeout(Duration::from_secs(3), receiver).await {
-            // Response received
-            Ok(msg) => Some(msg.unwrap()),
-            // Timeout
-            Err(_) => None,
-        };
-        // Remove callback and return result
-        self.rpc_callbacks.lock().unwrap().remove(&msg_id);
-        result
+    pub async fn rpc(&self, msg: Message<Request<OReq>>) -> Option<Message<Response<IRes>>> {
+        self.rpc_json(msg.body.msg_id, msg.into_json()).await
     }
 
-    // pub async fn rpc2_ser<T>(&self, ser_req: Json) -> Option<Message<Response<IRes>>> {
-    //     self.rpc2(Message {
-    //         src,
-    //         dest,
-    //         body: Request {
-    //             msg_id,
-    //             kind: map(body),
-    //         },
-    //     })
-    //     .await
-    // }
-
-    pub async fn rpc2_with<T>(
+    pub async fn rpc_json(
         &self,
-        src: SiteId,
-        dest: SiteId,
         msg_id: MessageId,
-        body: T,
-        map2: impl for<'a> FnOnce(&'a T) -> OReq::Me<'a>,
+        ser_req: Json,
     ) -> Option<Message<Response<IRes>>> {
-        let msg = Message {
-            src,
-            dest,
-            body: Request {
-                msg_id,
-                kind: map2(&body),
-            },
-        };
-        let msg_json = msg.into_json();
         let (sender, receiver) = oneshot::channel();
         // Insert a new callback
         self.rpc_callbacks.lock().unwrap().insert(msg_id, sender);
         // Send RPC request
-        writeln!(self.stdout.lock(), "{}", msg_json).unwrap();
+        writeln!(self.stdout.lock(), "{}", ser_req.as_str()).unwrap();
         // Wait to receive response
         let result = match tokio::time::timeout(Duration::from_secs(3), receiver).await {
             // Response received
@@ -327,8 +255,4 @@ impl<State> NodeBuilder<State> {
             phantom_oreq: PhantomData,
         })
     }
-}
-
-pub trait LifetimeGeneric {
-    type Me<'a>;
 }

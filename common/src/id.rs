@@ -18,6 +18,18 @@ pub enum SiteId {
     Node(NodeId),
 }
 
+impl From<ClientId> for SiteId {
+    fn from(value: ClientId) -> Self {
+        SiteId::Client(value)
+    }
+}
+
+impl From<NodeId> for SiteId {
+    fn from(value: NodeId) -> Self {
+        SiteId::Node(value)
+    }
+}
+
 impl PartialEq<ClientId> for SiteId {
     fn eq(&self, other: &ClientId) -> bool {
         match self {

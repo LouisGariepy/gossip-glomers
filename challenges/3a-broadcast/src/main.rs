@@ -4,7 +4,7 @@ use common::{
     define_msg_kind,
     id::NodeId,
     message::{Message, Response, TopologyRequest, TopologyResponse},
-    node::{LifetimeGeneric, NodeBuilder, NodeChannel},
+    node::{NodeBuilder, NodeChannel},
     FxIndexSet,
 };
 use serde::{Deserialize, Serialize};

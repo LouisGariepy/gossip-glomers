@@ -7,7 +7,7 @@ use common::{
     define_msg_kind,
     id::{MessageId, NodeId, SiteId},
     message::{Message, Request, Response, TopologyRequest, TopologyResponse},
-    node::{LifetimeGeneric, NodeBuilder, NodeChannel},
+    node::{NodeBuilder, NodeChannel},
     FxIndexSet,
 };
 use serde::{Deserialize, Serialize};
@@ -65,7 +65,7 @@ async fn main() {
                                 };
                                 // Send RPC request and await response
                                 let response = node
-                                    .rpc2(rpc_msg)
+                                    .rpc(rpc_msg)
                                     .await
                                     .expect("RPC request did not time out");
                                 // Assert that the response is a `BroadcastOk`

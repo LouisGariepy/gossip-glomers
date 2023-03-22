@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use common::{
     define_msg_kind,
     message::{Message, Response},
-    node::{LifetimeGeneric, NodeBuilder},
+    node::NodeBuilder,
 };
 
 #[tokio::main]
