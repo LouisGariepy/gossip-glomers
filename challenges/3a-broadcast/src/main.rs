@@ -1,4 +1,4 @@
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use common::{
     define_msg_kind,
@@ -9,30 +9,21 @@ use common::{
 };
 use serde::{Deserialize, Serialize};
 
+type Node = common::node::Node<NodeState, BroadcastRequest, BroadcastResponse<'static>, (), ()>;
+
 #[derive(Debug, Default)]
 struct NodeState {
+    /// The set of all messages held by this node.
     messages: Mutex<FxIndexSet<u64>>,
 }
 
 #[tokio::main]
 async fn main() {
-    NodeBuilder::init()
-        .with_state(initialize_node)
-        .build::<BroadcastRequest, BroadcastResponse, (), ()>()
-        .run(|node, msg| async move {
+    NodeBuilder::init().with_state(initialize_node).build().run(
+        |node: Arc<Node>, msg| async move {
             match msg.body.kind {
-                BroadcastRequest::Broadcast { message } => {
-                    node.state.messages.lock().unwrap().insert(message);
-                    node.send_response(Message {
-                        src: msg.dest,
-                        dest: msg.src,
-                        body: Response {
-                            in_reply_to: msg.body.msg_id,
-                            kind: BroadcastResponse::BroadcastOk {},
-                        },
-                    });
-                }
                 BroadcastRequest::Read {} => {
+                    // Send this node's recorded messages
                     node.send_response(Message {
                         src: msg.dest,
                         dest: msg.src,
@@ -44,20 +35,36 @@ async fn main() {
                         },
                     });
                 }
+                BroadcastRequest::Broadcast { message } => {
+                    // Insert the new message in the node's message set
+                    node.state.messages.lock().unwrap().insert(message);
+                    // Send OK response
+                    node.send_response(Message {
+                        src: msg.dest,
+                        dest: msg.src,
+                        body: Response {
+                            in_reply_to: msg.body.msg_id,
+                            kind: BroadcastResponse::BroadcastOk {},
+                        },
+                    });
+                }
             }
-        });
+        },
+    );
 }
 
 fn initialize_node(_: &NodeId, channel: &mut NodeChannel) -> NodeState {
-    let topology_msg = channel.receive_msg::<TopologyRequest>();
+    // Receive and respond to initial topology request
+    let topology_request = channel.receive_msg::<TopologyRequest>();
     channel.send_msg(&Message {
-        src: topology_msg.dest,
-        dest: topology_msg.src,
+        src: topology_request.dest,
+        dest: topology_request.src,
         body: Response {
-            in_reply_to: topology_msg.body.msg_id,
+            in_reply_to: topology_request.body.msg_id,
             kind: TopologyResponse::TopologyOk {},
         },
     });
+
     NodeState {
         messages: Default::default(),
     }

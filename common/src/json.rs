@@ -1,7 +1,4 @@
-use std::{
-    fmt::{Debug, Display},
-    sync::MutexGuard,
-};
+use std::sync::MutexGuard;
 
 use serde::{Deserialize, Serialize, Serializer};
 

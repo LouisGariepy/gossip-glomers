@@ -2,7 +2,10 @@ use std::{
     future::Future,
     io::{stdin, stdout, Stdin, Stdout, Write},
     marker::PhantomData,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 
@@ -11,7 +14,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::oneshot;
 
 use crate::{
-    id::{MessageId, NodeId},
+    id::{MessageId, NodeId, SiteId},
     message::{InitRequest, InitResponse, Message, MessageType, Request, Response},
     Json,
 };
@@ -37,6 +40,8 @@ pub struct Node<State, IReq, ORes, OReq, IRes> {
     pub rpc_callbacks: Mutex<FxHashMap<MessageId, RpcCallback<IRes>>>,
     /// Standard output. Allows nodes to send messages.
     stdout: Stdout,
+    /// Atomic counter for message IDs.
+    next_msg_id: AtomicU64,
     /// Zero-sized markers used to make the generic bounds more ergonomic for users.
     phantom_ireq: PhantomData<fn(IReq)>,
     phantom_ores: PhantomData<fn() -> ORes>,
@@ -51,8 +56,34 @@ where
     IRes: std::fmt::Debug + DeserializeOwned + Send + Sync + 'static,
     State: Send + Sync + 'static,
 {
-    pub fn serialize(&self, req: Message<Request<OReq>>) -> Json {
-        req.into_json()
+    pub fn next_msg_id(&self) -> MessageId {
+        MessageId(self.next_msg_id.fetch_add(1, Ordering::SeqCst))
+    }
+
+    pub fn serialize(&self, req: Message<Request<OReq>>) -> (MessageId, Json) {
+        (req.body.msg_id, req.into_json())
+    }
+
+    pub fn new_request<T: Into<SiteId>>(&self, dest: T, kind: OReq) -> Message<Request<OReq>> {
+        Message {
+            src: self.node_id.into(),
+            dest: dest.into(),
+            body: Request {
+                msg_id: self.next_msg_id(),
+                kind,
+            },
+        }
+    }
+
+    pub fn serialize_new_request<T: Into<SiteId>>(&self, dest: T, kind: OReq) -> (MessageId, Json) {
+        self.serialize(Message {
+            src: self.node_id.into(),
+            dest: dest.into(),
+            body: Request {
+                msg_id: self.next_msg_id(),
+                kind,
+            },
+        })
     }
 
     pub fn send_response(&self, msg: Message<Response<ORes>>) {
@@ -107,15 +138,17 @@ where
             match msg.body {
                 // Request are handled by the request handler in a separate task
                 MessageType::Request(request) => {
-                    let node = self.clone();
-                    tokio::spawn(request_handler(
-                        node,
-                        Message {
-                            src: msg.src,
-                            dest: msg.dest,
-                            body: request,
-                        },
-                    ));
+                    tokio::spawn({
+                        let node = Arc::clone(&self);
+                        request_handler(
+                            node,
+                            Message {
+                                src: msg.src,
+                                dest: msg.dest,
+                                body: request,
+                            },
+                        )
+                    });
                 }
                 // Response are sent to RPC tasks via a callback
                 MessageType::Response(response) => {
@@ -140,6 +173,14 @@ where
             }
         }
     }
+}
+
+#[macro_export]
+macro_rules! rpc {
+    ($node:ident, $dest:expr, $kind:expr $(,)?) => {{
+        let (msg_id, req_json) = $node.serialize($node.new_request($dest, $kind));
+        $node.rpc_json(msg_id, req_json)
+    }};
 }
 
 /// A simple abstraction that can read
@@ -253,6 +294,7 @@ impl<State> NodeBuilder<State> {
             phantom_ireq: PhantomData,
             phantom_ores: PhantomData,
             phantom_oreq: PhantomData,
+            next_msg_id: Default::default(),
         })
     }
 }

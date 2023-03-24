@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use common::{
@@ -6,11 +8,14 @@ use common::{
     node::NodeBuilder,
 };
 
+type Node = common::node::Node<(), EchoRequest, EchoResponse, (), ()>;
+
 #[tokio::main]
 async fn main() {
     NodeBuilder::init()
-        .build::<EchoRequest, EchoResponse, (), ()>()
-        .run(|node, msg| async move {
+        .build()
+        .run(|node: Arc<Node>, msg| async move {
+            // Send echo back as response
             node.send_response(Message {
                 src: msg.dest,
                 dest: msg.src,
