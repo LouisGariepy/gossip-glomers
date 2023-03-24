@@ -112,6 +112,7 @@ macro_rules! define_msg_kind {
                     $enum_ident::$variant_ident(inner) => inner
                 }
             }
+            #[must_use]
             $vis fn into_inner(self) -> $variant_ident {
                 match self {
                     $enum_ident::$variant_ident(inner) => inner

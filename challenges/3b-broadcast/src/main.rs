@@ -101,7 +101,7 @@ async fn main() {
     );
 }
 
-fn initialize_node(node_id: &NodeId, channel: &mut NodeChannel) -> NodeState {
+fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
     // Receive and respond to initial topology request
     let topology_request = channel.receive_msg::<TopologyRequest>();
     channel.send_msg(&Message {
@@ -116,11 +116,11 @@ fn initialize_node(node_id: &NodeId, channel: &mut NodeChannel) -> NodeState {
     // Extract neighbours from topology request
     let mut topology = topology_request.body.kind.into_inner().topology;
     let neighbours = topology
-        .remove(node_id)
+        .remove(&node_id)
         .expect("the topology should include this node's neighbours");
 
     NodeState {
-        messages: Default::default(),
+        messages: Mutex::default(),
         neighbours,
     }
 }

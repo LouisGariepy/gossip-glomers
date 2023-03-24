@@ -146,22 +146,8 @@ fn main() -> anyhow::Result<()> {
         Challenge::BroadcastD {
             partition,
             topology,
-        } => {
-            let c = command
-                .arg("test")
-                .args(["-w", "broadcast"])
-                .args(["--bin", &binary_path.to_string_lossy()])
-                .args(["--node-count", "25"])
-                .args(["--time-limit", "20"])
-                .args(["--rate", "100"])
-                .args(["--latency", "100"])
-                .args(["--topology", topology.as_str()]);
-            if partition {
-                c.args(["--nemesis", "partition"]);
-            };
-            c
         }
-        Challenge::BroadcastE {
+        | Challenge::BroadcastE {
             partition,
             topology,
         } => {

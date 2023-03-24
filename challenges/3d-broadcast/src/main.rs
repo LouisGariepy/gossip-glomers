@@ -46,7 +46,7 @@ async fn main() {
     node.run(request_handler);
 }
 
-fn initialize_node(node_id: &NodeId, channel: &mut NodeChannel) -> NodeState {
+fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
     // Receive and respond to initial topology message
     let topology_request = channel.receive_msg::<TopologyRequest>();
     channel.send_msg(&Message {
@@ -61,7 +61,7 @@ fn initialize_node(node_id: &NodeId, channel: &mut NodeChannel) -> NodeState {
     // Obtain node neighbours from topology
     let mut topology = topology_request.body.kind.into_inner().topology;
     let neighbours = topology
-        .remove(node_id)
+        .remove(&node_id)
         .expect("the topology should include this node's neighbours");
 
     // Create empty list for failed broadcasts
@@ -72,7 +72,7 @@ fn initialize_node(node_id: &NodeId, channel: &mut NodeChannel) -> NodeState {
             .collect(),
     );
     NodeState {
-        messages: Default::default(),
+        messages: Mutex::default(),
         neighbours,
         timeout_timestamps: failed_broadcasts,
     }
@@ -263,7 +263,7 @@ async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>)
                     in_reply_to: msg.body.msg_id,
                     kind: OutboundResponse::BroadcastManyOk {},
                 },
-            })
+            });
         }
     }
 }

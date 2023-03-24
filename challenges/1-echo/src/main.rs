@@ -25,7 +25,7 @@ async fn main() {
                         echo: msg.body.kind.into_inner().echo,
                     }),
                 },
-            })
+            });
         });
 }
 

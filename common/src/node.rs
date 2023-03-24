@@ -42,9 +42,11 @@ pub struct Node<State, IReq, ORes, OReq, IRes> {
     stdout: Stdout,
     /// Atomic counter for message IDs.
     next_msg_id: AtomicU64,
-    /// Zero-sized markers used to make the generic bounds more ergonomic for users.
+    /// Zero-sized marker used to make the generic bounds more ergonomic for users.
     phantom_ireq: PhantomData<fn(IReq)>,
+    /// Zero-sized marker to enforce the correct outbound response type.
     phantom_ores: PhantomData<fn() -> ORes>,
+    /// Zero-sized marker to enforce the correct outbound request type.
     phantom_oreq: PhantomData<fn() -> OReq>,
 }
 
@@ -56,14 +58,17 @@ where
     IRes: std::fmt::Debug + DeserializeOwned + Send + Sync + 'static,
     State: Send + Sync + 'static,
 {
+    /// Atomically increment the node's message counter and return previous value.
     pub fn next_msg_id(&self) -> MessageId {
         MessageId(self.next_msg_id.fetch_add(1, Ordering::SeqCst))
     }
 
+    /// Serializes a request message to JSON and returns it along with it's message id.
     pub fn serialize(&self, req: Message<Request<OReq>>) -> (MessageId, Json) {
         (req.body.msg_id, req.into_json())
     }
 
+    /// Convenience function to create a request message.
     pub fn new_request<T: Into<SiteId>>(&self, dest: T, kind: OReq) -> Message<Request<OReq>> {
         Message {
             src: self.node_id.into(),
@@ -75,6 +80,8 @@ where
         }
     }
 
+    /// Convenience function to create a request message and serialize it to
+    /// JSON, returning the serialized value along with it's message id.
     pub fn serialize_new_request<T: Into<SiteId>>(&self, dest: T, kind: OReq) -> (MessageId, Json) {
         self.serialize(Message {
             src: self.node_id.into(),
@@ -86,15 +93,26 @@ where
         })
     }
 
+    /// Sends a response message.
     pub fn send_response(&self, msg: Message<Response<ORes>>) {
         let msg_json = msg.into_json();
         writeln!(self.stdout.lock(), "{}", msg_json.as_str()).unwrap();
     }
 
+    /// Performs a RPC call by sending the request message and registering a callback.
+    /// When the node receives the corresponding response, it will send back the response
+    /// via the callback.
+    ///
+    /// If the RPC call times out, this function return `None`. Otherwise it returns the response.
     pub async fn rpc(&self, msg: Message<Request<OReq>>) -> Option<Message<Response<IRes>>> {
         self.rpc_json(msg.body.msg_id, msg.into_json()).await
     }
 
+    /// Performs a RPC call by sending the serialized request message and registering a callback.
+    /// When the node receives the corresponding response, it will send back the response
+    /// via the callback.
+    ///
+    /// If the RPC call times out, this function return `None`. Otherwise it returns the response.
     pub async fn rpc_json(
         &self,
         msg_id: MessageId,
@@ -175,10 +193,11 @@ where
     }
 }
 
+/// A convenience macro to handle sending RPC requests that contain non-`Send` data.
 #[macro_export]
 macro_rules! rpc {
     ($node:ident, $dest:expr, $kind:expr $(,)?) => {{
-        let (msg_id, req_json) = $node.serialize($node.new_request($dest, $kind));
+        let (msg_id, req_json) = $node.serialize_new_request($dest, $kind);
         $node.rpc_json(msg_id, req_json)
     }};
 }
@@ -266,14 +285,14 @@ impl NodeBuilder<()> {
     #[must_use]
     pub fn with_state<State>(
         mut self,
-        init: fn(node_id: &NodeId, &mut NodeChannel) -> State,
+        init: fn(node_id: NodeId, &mut NodeChannel) -> State,
     ) -> NodeBuilder<State>
     where
         State: Send + Sync + 'static,
     {
         NodeBuilder {
             node_ids: self.node_ids,
-            state: init(&self.node_id, &mut self.channel),
+            state: init(self.node_id, &mut self.channel),
             node_id: self.node_id,
             channel: self.channel,
         }
@@ -290,11 +309,11 @@ impl<State> NodeBuilder<State> {
             node_ids: self.node_ids,
             state: self.state,
             stdout: self.channel.stdout,
-            rpc_callbacks: Default::default(),
+            rpc_callbacks: Mutex::default(),
             phantom_ireq: PhantomData,
             phantom_ores: PhantomData,
             phantom_oreq: PhantomData,
-            next_msg_id: Default::default(),
+            next_msg_id: AtomicU64::default(),
         })
     }
 }

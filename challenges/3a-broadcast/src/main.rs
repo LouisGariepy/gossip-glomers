@@ -53,7 +53,7 @@ async fn main() {
     );
 }
 
-fn initialize_node(_: &NodeId, channel: &mut NodeChannel) -> NodeState {
+fn initialize_node(_: NodeId, channel: &mut NodeChannel) -> NodeState {
     // Receive and respond to initial topology request
     let topology_request = channel.receive_msg::<TopologyRequest>();
     channel.send_msg(&Message {
@@ -66,7 +66,7 @@ fn initialize_node(_: &NodeId, channel: &mut NodeChannel) -> NodeState {
     });
 
     NodeState {
-        messages: Default::default(),
+        messages: Mutex::default(),
     }
 }
 
