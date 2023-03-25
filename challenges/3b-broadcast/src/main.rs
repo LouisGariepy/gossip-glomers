@@ -1,15 +1,12 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use common::{
-    define_msg_kind,
-    id::{NodeId, SiteId},
-    message::{Message, Request, Response, TopologyRequest, TopologyResponse},
-    node::{NodeBuilder, NodeChannel},
-    FxIndexSet,
+    define_msg_kind, FxIndexSet, Message, NodeBuilder, NodeChannel, NodeId, Request, Response,
+    TopologyRequest, TopologyResponse,
 };
 use serde::{Deserialize, Serialize};
 
-type Node = common::node::Node<
+type Node = common::Node<
     NodeState,
     InboundRequest,
     OutboundResponse<'static>,
@@ -64,10 +61,12 @@ async fn main() {
                                     let response = node
                                         .rpc(Message {
                                             src: msg.dest,
-                                            dest: SiteId::Node(neighbour),
+                                            dest: neighbour.into(),
                                             body: Request {
                                                 msg_id: node.next_msg_id(),
-                                                kind: OutboundRequest::Broadcast { message },
+                                                kind: OutboundRequest::Broadcast(Broadcast {
+                                                    message,
+                                                }),
                                             },
                                         })
                                         .await
@@ -104,7 +103,7 @@ async fn main() {
 fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
     // Receive and respond to initial topology request
     let topology_request = channel.receive_msg::<TopologyRequest>();
-    channel.send_msg(&Message {
+    channel.send_msg(Message {
         src: topology_request.dest,
         dest: topology_request.src,
         body: Response {
@@ -127,7 +126,7 @@ fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
 
 define_msg_kind!(
     #[derive(Debug, Deserialize)]
-    pub enum InboundRequest {
+    enum InboundRequest {
         Read {},
         Broadcast { message: u64 },
     }
@@ -135,15 +134,7 @@ define_msg_kind!(
 
 define_msg_kind!(
     #[derive(Debug, Serialize)]
-    pub enum OutboundRequest {
-        Read {},
-        Broadcast { message: u64 },
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize)]
-    pub enum OutboundResponse<'a> {
+    enum OutboundResponse<'a> {
         ReadOk {
             #[serde(serialize_with = "common::serialize_guard")]
             messages: MutexGuard<'a, FxIndexSet<u64>>,
@@ -153,9 +144,15 @@ define_msg_kind!(
 );
 
 define_msg_kind!(
+    #[derive(Debug, Serialize)]
+    enum OutboundRequest {
+        Broadcast { message: u64 },
+    }
+);
+
+define_msg_kind!(
     #[derive(Debug, Deserialize)]
-    pub enum InboundResponse {
-        ReadOk { messages: FxIndexSet<u64> },
+    enum InboundResponse {
         BroadcastOk {},
     }
 );

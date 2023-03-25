@@ -2,13 +2,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use common::{
-    define_msg_kind,
-    message::{Message, Response},
-    node::NodeBuilder,
-};
+use common::{define_msg_kind, Message, Never, NodeBuilder, Response};
 
-type Node = common::node::Node<(), EchoRequest, EchoResponse, (), ()>;
+type Node = common::Node<(), InboundRequest, OutboundResponse, Never, Never>;
 
 #[tokio::main]
 async fn main() {
@@ -21,7 +17,7 @@ async fn main() {
                 dest: msg.src,
                 body: Response {
                     in_reply_to: msg.body.msg_id,
-                    kind: EchoResponse::EchoOk(EchoOk {
+                    kind: OutboundResponse::EchoOk(EchoOk {
                         echo: msg.body.kind.into_inner().echo,
                     }),
                 },
@@ -31,14 +27,14 @@ async fn main() {
 
 define_msg_kind!(
     #[derive(Debug, Deserialize)]
-    pub enum EchoRequest {
+    enum InboundRequest {
         Echo { echo: String },
     }
 );
 
 define_msg_kind!(
     #[derive(Debug, Serialize)]
-    pub enum EchoResponse {
+    enum OutboundResponse {
         EchoOk { echo: String },
     }
 );

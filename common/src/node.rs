@@ -20,7 +20,7 @@ use crate::{
 };
 
 /// Type that allows RPC tasks to be awoken.
-type RpcCallback<IRes> = oneshot::Sender<Message<Response<IRes>>>;
+pub type RpcCallback<IRes> = oneshot::Sender<Message<Response<IRes>>>;
 
 /// Type for the function that handles a [`Node`]'s inbound requests.
 type InboundRequestHandler<State, IReq, ORes, OReq, IRes, F> =
@@ -193,15 +193,6 @@ where
     }
 }
 
-/// A convenience macro to handle sending RPC requests that contain non-`Send` data.
-#[macro_export]
-macro_rules! rpc {
-    ($node:ident, $dest:expr, $kind:expr $(,)?) => {{
-        let (msg_id, req_json) = $node.serialize_new_request($dest, $kind);
-        $node.rpc_json(msg_id, req_json)
-    }};
-}
-
 /// A simple abstraction that can read
 /// and write messages over STDIN/STDOUT.
 pub struct NodeChannel {
@@ -215,8 +206,8 @@ pub struct NodeChannel {
 
 impl NodeChannel {
     /// Serializes a message to JSON and writes on a single line over STDOUT
-    pub fn send_msg<Body: Serialize>(&self, msg: &Message<Response<Body>>) {
-        writeln!(self.stdout.lock(), "{}", msg.to_json().as_str()).unwrap();
+    pub fn send_msg<Body: Serialize>(&self, msg: Message<Response<Body>>) {
+        writeln!(self.stdout.lock(), "{}", msg.into_json().as_str()).unwrap();
     }
 
     /// Reads a single line from STDIN and deserializes it from JSON into a message.
@@ -259,15 +250,14 @@ impl NodeBuilder<()> {
 
         // Receive init request and send response
         let init_request = channel.receive_msg::<InitRequest>();
-        let init_reponse = Message {
+        channel.send_msg(Message {
             src: init_request.dest,
             dest: init_request.src,
             body: Response {
                 in_reply_to: init_request.body.msg_id,
                 kind: InitResponse::InitOk {},
             },
-        };
-        channel.send_msg(&init_reponse);
+        });
 
         // Create the builder from the information in the init request.
         let init = init_request.body.kind.into_inner();
@@ -316,4 +306,13 @@ impl<State> NodeBuilder<State> {
             next_msg_id: AtomicU64::default(),
         })
     }
+}
+
+/// A convenience macro to handle sending RPC requests that contain non-`Send` data.
+#[macro_export]
+macro_rules! rpc {
+    ($node:ident, $dest:expr, $kind:expr $(,)?) => {{
+        let (msg_id, req_json) = $node.serialize_new_request($dest, $kind);
+        $node.rpc_json(msg_id, req_json)
+    }};
 }

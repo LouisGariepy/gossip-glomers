@@ -7,15 +7,12 @@ use std::{
 };
 
 use common::{
-    define_msg_kind,
-    id::NodeId,
-    message::{Message, Request, Response, TopologyRequest, TopologyResponse},
-    node::{NodeBuilder, NodeChannel},
-    rpc, FxHashMap, FxIndexSet, IndexSetSlice,
+    define_msg_kind, rpc, FxHashMap, FxIndexSet, IndexSetSlice, Message, NodeBuilder, NodeChannel,
+    NodeId, Request, Response, TopologyRequest, TopologyResponse,
 };
 use serde::{Deserialize, Serialize};
 
-type Node = common::node::Node<
+type Node = common::Node<
     NodeState,
     InboundRequest,
     OutboundResponse<'static>,
@@ -61,7 +58,7 @@ async fn main() {
 fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
     // Receive and respond to initial topology message
     let topology_request = channel.receive_msg::<TopologyRequest>();
-    channel.send_msg(&Message {
+    channel.send_msg(Message {
         src: topology_request.dest,
         dest: topology_request.src,
         body: Response {
@@ -126,16 +123,14 @@ fn healing_task(node: Arc<Node>) {
                     // If the response is OK, remove the timeout timestamp
                     // This signifies that this neighbour has now received all
                     // outstanding messages
-                    if let Some(response) = response {
-                        if let InboundResponse::BroadcastManyOk {} = response.body.kind {
-                            node.state
-                                .timeout_timestamps
-                                .lock()
-                                .unwrap()
-                                .get_mut(&neighbour_id)
-                                .unwrap()
-                                .take();
-                        }
+                    if response.is_some() {
+                        node.state
+                            .timeout_timestamps
+                            .lock()
+                            .unwrap()
+                            .get_mut(&neighbour_id)
+                            .unwrap()
+                            .take();
                     }
                 });
             }
@@ -209,6 +204,7 @@ fn broadcasting_task(node: Arc<Node>) {
     });
 }
 
+#[allow(clippy::unused_async)]
 async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>) {
     match msg.body.kind {
         InboundRequest::Read {} => {
@@ -257,7 +253,7 @@ async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>)
 
 define_msg_kind!(
     #[derive(Debug, Deserialize)]
-    pub enum InboundRequest {
+    enum InboundRequest {
         Read {},
         Broadcast { message: u64 },
         BroadcastMany { messages: FxIndexSet<u64> },
@@ -266,7 +262,7 @@ define_msg_kind!(
 
 define_msg_kind!(
     #[derive(Debug, Serialize)]
-    pub enum OutboundResponse<'a> {
+    enum OutboundResponse<'a> {
         ReadOk {
             #[serde(serialize_with = "common::serialize_guard")]
             messages: MutexGuard<'a, FxIndexSet<u64>>,
@@ -278,16 +274,14 @@ define_msg_kind!(
 
 define_msg_kind!(
     #[derive(Debug, Serialize)]
-    pub enum OutboundRequest<'a> {
-        Read {},
+    enum OutboundRequest<'a> {
         BroadcastMany { messages: &'a IndexSetSlice<u64> },
     }
 );
 
 define_msg_kind!(
     #[derive(Debug, Serialize, Deserialize)]
-    pub enum InboundResponse {
-        ReadOk { messages: FxIndexSet<u64> },
+    enum InboundResponse {
         BroadcastManyOk {},
     }
 );

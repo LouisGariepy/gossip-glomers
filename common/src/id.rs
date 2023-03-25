@@ -2,19 +2,26 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(transparent)]
+/// A type representing message IDs.
 pub struct MessageId(pub u64);
 
+/// A type representing the ID of a client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClientId(pub u64);
-impl_id_serde!(ClientId, 'c');
+pub struct ClientId(u64);
 
+/// A type representing the ID of a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(pub u64);
-impl_id_serde!(NodeId, 'n');
+pub struct NodeId(u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A type representing the ID of a site.
+///
+/// Sites can be clients, nodes, or services.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(untagged)]
 pub enum SiteId {
+    /// The site is a client.
     Client(ClientId),
+    /// The site is a node.
     Node(NodeId),
 }
 
@@ -57,34 +64,6 @@ impl PartialEq<NodeId> for SiteId {
 impl PartialEq<SiteId> for NodeId {
     fn eq(&self, other: &SiteId) -> bool {
         other == self
-    }
-}
-
-impl SiteId {
-    pub fn as_client_id(&self) -> Option<&ClientId> {
-        match self {
-            SiteId::Client(client_id) => Some(client_id),
-            SiteId::Node(_) => None,
-        }
-    }
-
-    pub fn as_node_id(&self) -> Option<&NodeId> {
-        match self {
-            SiteId::Client(_) => None,
-            SiteId::Node(node_id) => Some(node_id),
-        }
-    }
-}
-
-impl Serialize for SiteId {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            SiteId::Client(id) => id.serialize(serializer),
-            SiteId::Node(id) => id.serialize(serializer),
-        }
     }
 }
 
@@ -157,4 +136,6 @@ macro_rules! impl_id_serde {
         }
     };
 }
-use impl_id_serde;
+
+impl_id_serde!(ClientId, 'c');
+impl_id_serde!(NodeId, 'n');

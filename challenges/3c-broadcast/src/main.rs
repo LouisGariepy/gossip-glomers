@@ -4,15 +4,12 @@ use std::{
 };
 
 use common::{
-    define_msg_kind,
-    id::NodeId,
-    message::{Message, Request, Response, TopologyRequest, TopologyResponse},
-    node::{NodeBuilder, NodeChannel},
-    rpc, FxHashMap, FxIndexSet, IndexSetSlice, TupleMap,
+    define_msg_kind, rpc, FxHashMap, FxIndexSet, IndexSetSlice, Message, NodeBuilder, NodeChannel,
+    NodeId, Request, Response, TopologyRequest, TopologyResponse, TupleMap,
 };
 use serde::{Deserialize, Serialize};
 
-type Node = common::node::Node<
+type Node = common::Node<
     NodeState,
     InboundRequest,
     OutboundResponse<'static>,
@@ -59,7 +56,7 @@ fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
             kind: TopologyResponse::TopologyOk {},
         },
     };
-    channel.send_msg(&topology_response);
+    channel.send_msg(topology_response);
 
     // Obtain node neighbours from topology
     let mut topology = topology_request.body.kind.into_inner().topology;
@@ -261,7 +258,7 @@ async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>)
 
 define_msg_kind!(
     #[derive(Debug, Deserialize)]
-    pub enum InboundRequest {
+    enum InboundRequest {
         Read {},
         Broadcast { message: u64 },
         BroadcastMany { messages: FxIndexSet<u64> },
@@ -270,7 +267,7 @@ define_msg_kind!(
 
 define_msg_kind!(
     #[derive(Debug, Serialize)]
-    pub enum OutboundResponse<'a> {
+    enum OutboundResponse<'a> {
         ReadOk {
             #[serde(serialize_with = "common::serialize_guard")]
             messages: MutexGuard<'a, FxIndexSet<u64>>,
@@ -282,8 +279,7 @@ define_msg_kind!(
 
 define_msg_kind!(
     #[derive(Debug, Serialize)]
-    pub enum OutboundRequest<'a> {
-        Read {},
+    enum OutboundRequest<'a> {
         Broadcast { message: u64 },
         BroadcastMany { messages: &'a IndexSetSlice<u64> },
     }
@@ -291,8 +287,7 @@ define_msg_kind!(
 
 define_msg_kind!(
     #[derive(Debug, Serialize, Deserialize)]
-    pub enum InboundResponse {
-        ReadOk { messages: FxIndexSet<u64> },
+    enum InboundResponse {
         BroadcastOk {},
         BroadcastManyOk {},
     }

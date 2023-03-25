@@ -4,15 +4,12 @@ use std::{
 };
 
 use common::{
-    define_msg_kind,
-    id::{NodeId, SiteId},
-    message::{Message, Request, Response, TopologyRequest, TopologyResponse},
-    node::{NodeBuilder, NodeChannel},
-    rpc, FxHashMap, FxIndexSet, IndexSetSlice, TupleMap,
+    define_msg_kind, rpc, FxHashMap, FxIndexSet, IndexSetSlice, Message, NodeBuilder, NodeChannel,
+    NodeId, Request, Response, TopologyRequest, TopologyResponse, TupleMap,
 };
 use serde::{Deserialize, Serialize};
 
-type Node = common::node::Node<
+type Node = common::Node<
     NodeState,
     InboundRequest,
     OutboundResponse<'static>,
@@ -49,7 +46,7 @@ async fn main() {
 fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
     // Receive and respond to initial topology message
     let topology_request = channel.receive_msg::<TopologyRequest>();
-    channel.send_msg(&Message {
+    channel.send_msg(Message {
         src: topology_request.dest,
         dest: topology_request.src,
         body: Response {
@@ -163,7 +160,7 @@ async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>)
                     .state
                     .neighbours
                     .iter()
-                    .filter(|&&neighbour_id| SiteId::Node(neighbour_id) != msg.src);
+                    .filter(|&&neighbour_id| neighbour_id != msg.src);
 
                 // Broadcast to susceptible neighbours
                 for neighbour in susceptible_neighbours {
@@ -220,7 +217,7 @@ async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>)
                     .state
                     .neighbours
                     .iter()
-                    .filter(|&&neighbour_id| SiteId::Node(neighbour_id) != msg.src);
+                    .filter(|&&neighbour_id| neighbour_id != msg.src);
                 // Broadcast to susceptible neighbours
                 let healing_messages = Arc::new(messages);
                 for neighbour in susceptible_neighbours {
@@ -270,7 +267,7 @@ async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>)
 
 define_msg_kind!(
     #[derive(Debug, Deserialize)]
-    pub enum InboundRequest {
+    enum InboundRequest {
         Read {},
         Broadcast { message: u64 },
         BroadcastMany { messages: FxIndexSet<u64> },
@@ -279,7 +276,7 @@ define_msg_kind!(
 
 define_msg_kind!(
     #[derive(Debug, Serialize)]
-    pub enum OutboundResponse<'a> {
+    enum OutboundResponse<'a> {
         ReadOk {
             #[serde(serialize_with = "common::serialize_guard")]
             messages: MutexGuard<'a, FxIndexSet<u64>>,
@@ -291,8 +288,7 @@ define_msg_kind!(
 
 define_msg_kind!(
     #[derive(Debug, Serialize)]
-    pub enum OutboundRequest<'a> {
-        Read {},
+    enum OutboundRequest<'a> {
         Broadcast { message: u64 },
         BroadcastMany { messages: &'a IndexSetSlice<u64> },
     }
@@ -300,8 +296,7 @@ define_msg_kind!(
 
 define_msg_kind!(
     #[derive(Debug, Serialize, Deserialize)]
-    pub enum InboundResponse {
-        ReadOk { messages: FxIndexSet<u64> },
+    enum InboundResponse {
         BroadcastOk {},
         BroadcastManyOk {},
     }
