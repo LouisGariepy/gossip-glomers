@@ -1,6 +1,4 @@
-use std::sync::MutexGuard;
-
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 use crate::message::Message;
 
@@ -9,6 +7,7 @@ use crate::message::Message;
 /// The purpose of this type is to restrict the ways you can construct
 /// serialized values. This prevents accidentally sending serialized
 /// messages that are not supported by the nodes.
+#[derive(Debug)]
 pub struct Json(String);
 
 impl<Body: Serialize> Message<Body> {
@@ -31,18 +30,4 @@ impl Json {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
-}
-
-/// A serde helper to serialize data held behind a [`MutexGuard`]
-///
-/// # Errors
-/// This function returns an error if the value cannot be serialized.
-pub fn serialize_guard<T: Serialize, S>(
-    guard: &MutexGuard<T>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    guard.serialize(serializer)
 }

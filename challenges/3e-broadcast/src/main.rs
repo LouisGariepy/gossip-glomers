@@ -1,14 +1,14 @@
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Mutex, MutexGuard,
+        Arc,
     },
     time::Duration,
 };
 
 use common::{
-    define_msg_kind, rpc, FxHashMap, FxIndexSet, IndexSetSlice, Message, NodeBuilder, NodeChannel,
-    NodeId, Request, Response, TopologyRequest, TopologyResponse,
+    define_msg_kind, respond, rpc, FxHashMap, FxIndexSet, HealthyMutex, IndexSetSlice, Message,
+    NodeBuilder, NodeChannel, NodeId, Request, Response, TopologyRequest, TopologyResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -29,7 +29,7 @@ const BROADCAST_INTERVAL: Duration = Duration::from_millis(200);
 #[derive(Debug, Default)]
 struct NodeState {
     /// The set of all messages held by this node.
-    messages: Mutex<FxIndexSet<u64>>,
+    messages: HealthyMutex<FxIndexSet<u64>>,
     /// The direct neighbours of this node.
     neighbours: Vec<NodeId>,
     /// The starting timestamp of the next broadcast. All messages
@@ -40,7 +40,7 @@ struct NodeState {
     /// All messages with greater or equal timestamps will be
     /// broadcasted to the corresponding neighbour during the
     /// next healing broadcast.
-    timeout_timestamps: Mutex<FxHashMap<NodeId, Option<usize>>>,
+    timeout_timestamps: HealthyMutex<FxHashMap<NodeId, Option<usize>>>,
 }
 
 #[tokio::main]
@@ -74,14 +74,14 @@ fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
         .expect("the topology should include this node's neighbours");
 
     // Create empty map for failed broadcasts
-    let failed_broadcasts = Mutex::new(
+    let failed_broadcasts = HealthyMutex::new(
         neighbours
             .iter()
             .map(|&neighbour| (neighbour, None))
             .collect(),
     );
     NodeState {
-        messages: Mutex::default(),
+        messages: HealthyMutex::default(),
         neighbours,
         broadcast_timestamp: AtomicUsize::default(),
         timeout_timestamps: failed_broadcasts,
@@ -99,23 +99,22 @@ fn healing_task(node: Arc<Node>) {
                 .state
                 .timeout_timestamps
                 .lock()
-                .unwrap()
                 .iter()
-                .filter_map(|(neighbour_id, timeout_timestamp)| {
-                    timeout_timestamp.map(|timeout_timestamp| (*neighbour_id, timeout_timestamp))
+                .filter_map(|(neighbour, timeout_timestamp)| {
+                    timeout_timestamp.map(|timeout_timestamp| (*neighbour, timeout_timestamp))
                 })
                 .collect::<Vec<_>>();
 
             // Send outstanding messages to each susceptible neighbour
-            for (neighbour_id, timeout_timestamp) in suceptible_neighbours {
+            for (neighbour, timeout_timestamp) in suceptible_neighbours {
                 let node = Arc::clone(&node);
                 tokio::spawn(async move {
                     // Send broadcast request and await response
                     let response = rpc!(
                         node,
-                        neighbour_id,
+                        neighbour,
                         OutboundRequest::BroadcastMany {
-                            messages: &node.state.messages.lock().unwrap()[timeout_timestamp..]
+                            messages: &node.state.messages.lock()[timeout_timestamp..]
                         }
                     )
                     .await;
@@ -127,8 +126,7 @@ fn healing_task(node: Arc<Node>) {
                         node.state
                             .timeout_timestamps
                             .lock()
-                            .unwrap()
-                            .get_mut(&neighbour_id)
+                            .get_mut(&neighbour)
                             .unwrap()
                             .take();
                     }
@@ -146,7 +144,7 @@ fn broadcasting_task(node: Arc<Node>) {
             interval.tick().await;
 
             let (broadcast_timestamp, messages) = {
-                let messages_guard = &node.state.messages.lock().unwrap();
+                let messages_guard = &node.state.messages.lock();
 
                 // If there were no new messages since last broadcast
                 // then skip this broadcast
@@ -166,34 +164,38 @@ fn broadcasting_task(node: Arc<Node>) {
                     .neighbours
                     .iter()
                     .copied()
-                    .map(|neighbour_id| {
-                        let msg_ser = node.serialize_new_request(
-                            neighbour_id,
-                            OutboundRequest::BroadcastMany {
-                                messages: &messages_guard[broadcast_timestamp..],
+                    .map(|neighbour| {
+                        let msg_id = node.next_msg_id();
+                        let msg_ser = node.serialize_request(Message {
+                            src: node.node_id.into(),
+                            dest: neighbour.into(),
+                            body: Request {
+                                msg_id,
+                                kind: OutboundRequest::BroadcastMany {
+                                    messages: &messages_guard[broadcast_timestamp..],
+                                },
                             },
-                        );
-                        (neighbour_id, msg_ser.0, msg_ser.1)
+                        });
+                        (neighbour, msg_id, msg_ser)
                     })
                     .collect::<Vec<_>>();
                 (broadcast_timestamp, messages)
             };
 
             // Send new message batch to each susceptible neighbour
-            for (neighbour_id, msg_id, msg_ser) in messages {
+            for (neighbour, msg_id, msg_ser) in messages {
                 tokio::spawn({
                     let node = Arc::clone(&node);
                     async move {
                         // Send RPC request and get response
-                        let response = node.rpc_json(msg_id, msg_ser).await;
+                        let response = node.rpc(msg_id, msg_ser).await;
 
                         // If the RPC request timed out, record the timestamp
                         if response.is_none() {
                             node.state
                                 .timeout_timestamps
                                 .lock()
-                                .unwrap()
-                                .get_mut(&neighbour_id)
+                                .get_mut(&neighbour)
                                 .unwrap()
                                 .get_or_insert(broadcast_timestamp);
                         }
@@ -205,48 +207,31 @@ fn broadcasting_task(node: Arc<Node>) {
 }
 
 #[allow(clippy::unused_async)]
-async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>) {
-    match msg.body.kind {
+async fn request_handler(node: Arc<Node>, request: Message<Request<InboundRequest>>) {
+    match request.body.kind {
         InboundRequest::Read {} => {
             // Send this node's recorded messages
-            node.send_response(Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: Response {
-                    in_reply_to: msg.body.msg_id,
-                    kind: OutboundResponse::ReadOk {
-                        messages: node.state.messages.lock().unwrap(),
-                    },
-                },
-            });
+            respond!(
+                node,
+                request,
+                OutboundResponse::ReadOk {
+                    messages: &node.state.messages.lock(),
+                }
+            );
         }
         InboundRequest::Broadcast { message } => {
             // Insert the new message in the node's message set
-            node.state.messages.lock().unwrap().insert(message);
+            node.state.messages.lock().insert(message);
             // Send OK response
-            node.send_response(Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: Response {
-                    in_reply_to: msg.body.msg_id,
-                    kind: OutboundResponse::BroadcastOk {},
-                },
-            });
+            respond!(node, request, OutboundResponse::BroadcastOk {});
         }
         InboundRequest::BroadcastMany {
             messages: healing_messages,
         } => {
             // Insert the new messages in the node's message set
-            node.state.messages.lock().unwrap().extend(healing_messages);
+            node.state.messages.lock().extend(healing_messages);
             // Send OK response
-            node.send_response(Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: Response {
-                    in_reply_to: msg.body.msg_id,
-                    kind: OutboundResponse::BroadcastManyOk {},
-                },
-            });
+            respond!(node, request, OutboundResponse::BroadcastManyOk {});
         }
     }
 }
@@ -263,10 +248,7 @@ define_msg_kind!(
 define_msg_kind!(
     #[derive(Debug, Serialize)]
     enum OutboundResponse<'a> {
-        ReadOk {
-            #[serde(serialize_with = "common::serialize_guard")]
-            messages: MutexGuard<'a, FxIndexSet<u64>>,
-        },
+        ReadOk { messages: &'a FxIndexSet<u64> },
         BroadcastOk {},
         BroadcastManyOk {},
     }

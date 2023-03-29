@@ -1,8 +1,8 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use common::{
-    define_msg_kind, FxIndexSet, Message, Never, NodeBuilder, NodeChannel, NodeId, Response,
-    TopologyRequest, TopologyResponse,
+    define_msg_kind, respond, FxIndexSet, HealthyMutex, Message, Never, NodeBuilder, NodeChannel,
+    NodeId, Response, TopologyRequest, TopologyResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -11,39 +11,29 @@ type Node = common::Node<NodeState, InboundRequest, OutboundResponse<'static>, N
 #[derive(Debug, Default)]
 struct NodeState {
     /// The set of all messages held by this node.
-    messages: Mutex<FxIndexSet<u64>>,
+    messages: HealthyMutex<FxIndexSet<u64>>,
 }
 
 #[tokio::main]
 async fn main() {
     NodeBuilder::init().with_state(initialize_node).build().run(
-        |node: Arc<Node>, msg| async move {
-            match msg.body.kind {
+        |node: Arc<Node>, request| async move {
+            match request.body.kind {
                 InboundRequest::Read {} => {
                     // Send this node's recorded messages
-                    node.send_response(Message {
-                        src: msg.dest,
-                        dest: msg.src,
-                        body: Response {
-                            in_reply_to: msg.body.msg_id,
-                            kind: OutboundResponse::ReadOk {
-                                messages: node.state.messages.lock().unwrap(),
-                            },
-                        },
-                    });
+                    respond!(
+                        node,
+                        request,
+                        OutboundResponse::ReadOk {
+                            messages: &node.state.messages.lock(),
+                        }
+                    );
                 }
                 InboundRequest::Broadcast { message } => {
                     // Insert the new message in the node's message set
-                    node.state.messages.lock().unwrap().insert(message);
+                    node.state.messages.lock().insert(message);
                     // Send OK response
-                    node.send_response(Message {
-                        src: msg.dest,
-                        dest: msg.src,
-                        body: Response {
-                            in_reply_to: msg.body.msg_id,
-                            kind: OutboundResponse::BroadcastOk {},
-                        },
-                    });
+                    respond!(node, request, OutboundResponse::BroadcastOk {});
                 }
             }
         },
@@ -63,7 +53,7 @@ fn initialize_node(_: NodeId, channel: &mut NodeChannel) -> NodeState {
     });
 
     NodeState {
-        messages: Mutex::default(),
+        messages: HealthyMutex::default(),
     }
 }
 
@@ -78,10 +68,7 @@ define_msg_kind!(
 define_msg_kind!(
     #[derive(Debug, Serialize)]
     enum OutboundResponse<'a> {
-        ReadOk {
-            #[serde(serialize_with = "common::serialize_guard")]
-            messages: MutexGuard<'a, FxIndexSet<u64>>,
-        },
+        ReadOk { messages: &'a FxIndexSet<u64> },
         BroadcastOk {},
     }
 );

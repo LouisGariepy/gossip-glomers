@@ -14,7 +14,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::oneshot;
 
 use crate::{
-    id::{MessageId, NodeId, SiteId},
+    id::{MessageId, NodeId},
     message::{InitRequest, InitResponse, Message, MessageType, Request, Response},
     Json,
 };
@@ -64,48 +64,18 @@ where
     }
 
     /// Serializes a request message to JSON and returns it along with it's message id.
-    pub fn serialize(&self, req: Message<Request<OReq>>) -> (MessageId, Json) {
-        (req.body.msg_id, req.into_json())
-    }
-
-    /// Convenience function to create a request message.
-    pub fn new_request<T: Into<SiteId>>(&self, dest: T, kind: OReq) -> Message<Request<OReq>> {
-        Message {
-            src: self.node_id.into(),
-            dest: dest.into(),
-            body: Request {
-                msg_id: self.next_msg_id(),
-                kind,
-            },
-        }
-    }
-
-    /// Convenience function to create a request message and serialize it to
-    /// JSON, returning the serialized value along with it's message id.
-    pub fn serialize_new_request<T: Into<SiteId>>(&self, dest: T, kind: OReq) -> (MessageId, Json) {
-        self.serialize(Message {
-            src: self.node_id.into(),
-            dest: dest.into(),
-            body: Request {
-                msg_id: self.next_msg_id(),
-                kind,
-            },
-        })
+    pub fn serialize_response(&self, req: Message<Response<ORes>>) -> Json {
+        req.into_json()
     }
 
     /// Sends a response message.
-    pub fn send_response(&self, msg: Message<Response<ORes>>) {
-        let msg_json = msg.into_json();
-        writeln!(self.stdout.lock(), "{}", msg_json.as_str()).unwrap();
+    pub fn send_response(&self, res: Json) {
+        writeln!(self.stdout.lock(), "{}", res.as_str()).unwrap();
     }
 
-    /// Performs a RPC call by sending the request message and registering a callback.
-    /// When the node receives the corresponding response, it will send back the response
-    /// via the callback.
-    ///
-    /// If the RPC call times out, this function return `None`. Otherwise it returns the response.
-    pub async fn rpc(&self, msg: Message<Request<OReq>>) -> Option<Message<Response<IRes>>> {
-        self.rpc_json(msg.body.msg_id, msg.into_json()).await
+    /// Serializes a request message to JSON and returns it along with it's message id.
+    pub fn serialize_request(&self, req: Message<Request<OReq>>) -> Json {
+        req.into_json()
     }
 
     /// Performs a RPC call by sending the serialized request message and registering a callback.
@@ -113,11 +83,7 @@ where
     /// via the callback.
     ///
     /// If the RPC call times out, this function return `None`. Otherwise it returns the response.
-    pub async fn rpc_json(
-        &self,
-        msg_id: MessageId,
-        ser_req: Json,
-    ) -> Option<Message<Response<IRes>>> {
+    pub async fn rpc(&self, msg_id: MessageId, ser_req: Json) -> Option<Message<Response<IRes>>> {
         let (sender, receiver) = oneshot::channel();
         // Insert a new callback
         self.rpc_callbacks.lock().unwrap().insert(msg_id, sender);
@@ -157,9 +123,8 @@ where
                 // Request are handled by the request handler in a separate task
                 MessageType::Request(request) => {
                     tokio::spawn({
-                        let node = Arc::clone(&self);
                         request_handler(
-                            node,
+                            Arc::clone(&self),
                             Message {
                                 src: msg.src,
                                 dest: msg.dest,
@@ -308,11 +273,35 @@ impl<State> NodeBuilder<State> {
     }
 }
 
-/// A convenience macro to handle sending RPC requests that contain non-`Send` data.
+/// Convenience macro to write RPC calls.
 #[macro_export]
 macro_rules! rpc {
     ($node:ident, $dest:expr, $kind:expr $(,)?) => {{
-        let (msg_id, req_json) = $node.serialize_new_request($dest, $kind);
-        $node.rpc_json(msg_id, req_json)
+        let msg_id = $node.next_msg_id();
+        let msg_ser = $node.serialize_request(Message {
+            src: $node.node_id.into(),
+            dest: $dest.into(),
+            body: Request {
+                msg_id,
+                kind: $kind,
+            },
+        });
+        $node.rpc(msg_id, msg_ser)
+    }};
+}
+
+/// Convenience macro to write responses to inbound requests.
+#[macro_export]
+macro_rules! respond {
+    ($node:ident, $request:expr, $kind:expr $(,)?) => {{
+        let msg_ser = $node.serialize_response(Message {
+            src: $request.dest,
+            dest: $request.src,
+            body: Response {
+                in_reply_to: $request.body.msg_id,
+                kind: $kind,
+            },
+        });
+        $node.send_response(msg_ser);
     }};
 }

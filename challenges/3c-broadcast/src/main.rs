@@ -1,11 +1,9 @@
-use std::{
-    sync::{Arc, Mutex, MutexGuard},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use common::{
-    define_msg_kind, rpc, FxHashMap, FxIndexSet, IndexSetSlice, Message, NodeBuilder, NodeChannel,
-    NodeId, Request, Response, TopologyRequest, TopologyResponse, TupleMap,
+    define_msg_kind, respond, rpc, FxHashMap, FxIndexSet, HealthyMutex, IndexSetSlice, Message,
+    NodeBuilder, NodeChannel, NodeId, Request, Response, TopologyRequest, TopologyResponse,
+    TupleMap,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,14 +21,14 @@ const HEALING_INTERVAL: Duration = Duration::from_millis(1000);
 #[derive(Debug, Default)]
 struct NodeState {
     /// The set of all messages held by this node.
-    messages: Mutex<FxIndexSet<u64>>,
+    messages: HealthyMutex<FxIndexSet<u64>>,
     /// The direct neighbours of this node.
     neighbours: Vec<NodeId>,
     /// Map recording the timeout timestamp of each neighbour.
     /// All messages with greater or equal timestamps will be
     /// broadcasted to the corresponding neighbour during the
     /// next healing broadcast.
-    timeout_timestamps: Mutex<FxHashMap<NodeId, Option<usize>>>,
+    timeout_timestamps: HealthyMutex<FxHashMap<NodeId, Option<usize>>>,
 }
 
 #[tokio::main]
@@ -65,14 +63,14 @@ fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
         .expect("the topology should include this node's neighbours");
 
     // Create empty list for failed broadcasts
-    let failed_broadcasts = Mutex::new(
+    let failed_broadcasts = HealthyMutex::new(
         neighbours
             .iter()
             .map(|&neighbour| (neighbour, None))
             .collect(),
     );
     NodeState {
-        messages: Mutex::default(),
+        messages: HealthyMutex::default(),
         neighbours,
         timeout_timestamps: failed_broadcasts,
     }
@@ -88,7 +86,6 @@ async fn spawn_healing(node: Arc<Node>) {
             .state
             .timeout_timestamps
             .lock()
-            .unwrap()
             .iter()
             .filter_map(|(neighbour, timeout_timestamp)| {
                 timeout_timestamp.map(|timeout_timestamp| (*neighbour, timeout_timestamp))
@@ -96,17 +93,16 @@ async fn spawn_healing(node: Arc<Node>) {
             .collect::<Vec<_>>();
 
         // Send outstanding messages to each susceptible neighbour
-        for (neighbour_id, timeout_timestamp) in suceptible_neighbours {
+        for (neighbour, timeout_timestamp) in suceptible_neighbours {
             tokio::spawn({
                 let node = Arc::clone(&node);
                 async move {
                     // Send broadcast request and await response
                     let response = rpc!(
                         node,
-                        neighbour_id,
+                        neighbour,
                         OutboundRequest::BroadcastMany {
-                            messages: &node.state.messages.lock().unwrap().as_slice()
-                                [timeout_timestamp..],
+                            messages: &node.state.messages.lock().as_slice()[timeout_timestamp..],
                         }
                     )
                     .await;
@@ -119,8 +115,7 @@ async fn spawn_healing(node: Arc<Node>) {
                             node.state
                                 .timeout_timestamps
                                 .lock()
-                                .unwrap()
-                                .get_mut(&neighbour_id)
+                                .get_mut(&neighbour)
                                 .unwrap()
                                 .take();
                         }
@@ -131,20 +126,17 @@ async fn spawn_healing(node: Arc<Node>) {
     }
 }
 
-async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>) {
-    match msg.body.kind {
+async fn request_handler(node: Arc<Node>, request: Message<Request<InboundRequest>>) {
+    match request.body.kind {
         InboundRequest::Read {} => {
             // Send this node's recorded messages
-            node.send_response(Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: Response {
-                    in_reply_to: msg.body.msg_id,
-                    kind: OutboundResponse::ReadOk {
-                        messages: node.state.messages.lock().unwrap(),
-                    },
-                },
-            });
+            respond!(
+                node,
+                request,
+                OutboundResponse::ReadOk {
+                    messages: &node.state.messages.lock(),
+                }
+            );
         }
         InboundRequest::Broadcast { message } => {
             // Try to insert new message in the node's message set
@@ -152,7 +144,6 @@ async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>)
                 .state
                 .messages
                 .lock()
-                .unwrap()
                 .insert_full(message)
                 .map(|(index, inserted)| inserted.then_some(index));
 
@@ -176,7 +167,6 @@ async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>)
                                 node.state
                                     .timeout_timestamps
                                     .lock()
-                                    .unwrap()
                                     .get_mut(&neighbour)
                                     .unwrap()
                                     .get_or_insert(message_index);
@@ -188,19 +178,12 @@ async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>)
 
             // After broadcasting procedure is
             // complete, send OK response
-            node.send_response(Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: Response {
-                    in_reply_to: msg.body.msg_id,
-                    kind: OutboundResponse::BroadcastOk {},
-                },
-            });
+            respond!(node, request, OutboundResponse::BroadcastOk {});
         }
         InboundRequest::BroadcastMany { messages } => {
             // Try to insert the new messages in the node's message set
             let inserted = {
-                let mut node_messages = node.state.messages.lock().unwrap();
+                let mut node_messages = node.state.messages.lock();
                 let old_len = node_messages.len();
                 node_messages.extend(&messages);
                 (old_len < node_messages.len()).then_some(old_len)
@@ -232,7 +215,6 @@ async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>)
                                 node.state
                                     .timeout_timestamps
                                     .lock()
-                                    .unwrap()
                                     .get_mut(&neighbour)
                                     .unwrap()
                                     .get_or_insert(broadcast_index);
@@ -244,14 +226,7 @@ async fn request_handler(node: Arc<Node>, msg: Message<Request<InboundRequest>>)
 
             // After broadcasting procedure is
             // complete, respond with an OK response
-            node.send_response(Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: Response {
-                    in_reply_to: msg.body.msg_id,
-                    kind: OutboundResponse::BroadcastManyOk {},
-                },
-            });
+            respond!(node, request, OutboundResponse::BroadcastManyOk {});
         }
     }
 }
@@ -268,10 +243,7 @@ define_msg_kind!(
 define_msg_kind!(
     #[derive(Debug, Serialize)]
     enum OutboundResponse<'a> {
-        ReadOk {
-            #[serde(serialize_with = "common::serialize_guard")]
-            messages: MutexGuard<'a, FxIndexSet<u64>>,
-        },
+        ReadOk { messages: &'a FxIndexSet<u64> },
         BroadcastOk {},
         BroadcastManyOk {},
     }

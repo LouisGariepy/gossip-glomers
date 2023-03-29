@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(transparent)]
 /// A type representing message IDs.
-pub struct MessageId(pub u64);
+pub struct MessageId(pub(crate) u64);
 
 /// A type representing the ID of a client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +23,15 @@ pub enum SiteId {
     Client(ClientId),
     /// The site is a node.
     Node(NodeId),
+    /// The site is a service.
+    Service(ServiceId),
+}
+
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServiceId {
+    /// A Sequentially consisten key-value service.
+    SeqKv,
 }
 
 impl From<ClientId> for SiteId {
@@ -41,7 +50,7 @@ impl PartialEq<ClientId> for SiteId {
     fn eq(&self, other: &ClientId) -> bool {
         match self {
             SiteId::Client(client_id) => client_id == other,
-            SiteId::Node(_) => false,
+            SiteId::Node(_) | SiteId::Service(_) => false,
         }
     }
 }
@@ -55,13 +64,28 @@ impl PartialEq<SiteId> for ClientId {
 impl PartialEq<NodeId> for SiteId {
     fn eq(&self, other: &NodeId) -> bool {
         match self {
-            SiteId::Client(_) => false,
             SiteId::Node(node_id) => node_id == other,
+            SiteId::Client(_) | SiteId::Service(_) => false,
         }
     }
 }
 
 impl PartialEq<SiteId> for NodeId {
+    fn eq(&self, other: &SiteId) -> bool {
+        other == self
+    }
+}
+
+impl PartialEq<ServiceId> for SiteId {
+    fn eq(&self, other: &ServiceId) -> bool {
+        match self {
+            SiteId::Client(_) | SiteId::Node(_) => false,
+            SiteId::Service(service_id) => service_id == other,
+        }
+    }
+}
+
+impl PartialEq<SiteId> for ServiceId {
     fn eq(&self, other: &SiteId) -> bool {
         other == self
     }
