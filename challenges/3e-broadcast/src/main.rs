@@ -255,6 +255,7 @@ define_msg_kind!(
 );
 
 define_msg_kind!(
+    inbound,
     #[derive(Debug, Serialize)]
     enum OutboundRequest<'a> {
         BroadcastMany { messages: &'a IndexSetSlice<u64> },

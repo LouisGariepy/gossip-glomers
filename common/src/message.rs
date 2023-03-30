@@ -53,6 +53,123 @@ pub struct Message<Body> {
     pub body: Body,
 }
 
+/// A macro utility to define message kinds.
+#[macro_export]
+macro_rules! define_msg_kind {
+    (
+        $(#[doc = $enum_doc:expr])*
+        #[derive($($derive:path),*)]
+        $vis:vis enum $enum_ident:ident $(<$($generics:tt),*>)?  {
+            $(#[doc = $variant_doc:expr])*
+            $variant_ident:ident {
+                $(
+                    $(#[doc = $field_doc:expr])*
+                    $field_ident:ident : $field_ty:ty
+                ),+ $(,)?
+            } $(,)?
+        }
+    ) =>
+    {
+        $(#[doc = $enum_doc])*
+        #[derive($($derive),*)]
+        #[serde(tag = "type")]
+        #[serde(rename_all = "snake_case")]
+        $vis enum $enum_ident $(<$($generics),*>)? {
+            $(#[doc = $variant_doc])*
+            #[allow(missing_docs)]
+            $variant_ident($variant_ident $(<$($generics),*>)?),
+        }
+
+        impl $(<$($generics),*>)? $enum_ident $(<$($generics),*>)? {
+            #[doc = "Converts [`"]
+            #[doc = stringify!($enum_ident)]
+            #[doc = "`] into it's concrete struct type [`"]
+            #[doc = stringify!($variant_ident)]
+            #[doc = "`]."]
+            #[must_use]
+            $vis fn into_inner(self) -> $variant_ident $(<$($generics),*>)? {
+                match self {
+                    $enum_ident::$variant_ident(inner) => inner
+                }
+            }
+        }
+
+        #[doc = "Concrete data-holding struct for the [`"]
+        #[doc = stringify!($enum_ident)]
+        #[doc = "`] message kind"]
+        #[derive($($derive),*)]
+        $vis struct $variant_ident $(<$($generics),*>)? {
+            $(
+                $(#[doc = $field_doc])*
+                $vis $field_ident : $field_ty,
+            )+
+        }
+    };
+    (
+        inbound,
+        $(#[doc = $enum_doc:expr])*
+        #[derive($($derive:path),*)]
+        $vis:vis enum $enum_ident:ident $(<$($generics:tt),*>)?  {
+            $(#[doc = $variant_doc:expr])*
+            $variant_ident:ident {
+                $(
+                    $(#[doc = $field_doc:expr])*
+                    $field_ident:ident : $field_ty:ty
+                ),+ $(,)?
+            } $(,)?
+        }
+    ) => {
+        $(#[doc = $enum_doc])*
+        #[derive($($derive),*)]
+        #[serde(tag = "type")]
+        #[serde(rename_all = "snake_case")]
+        #[allow(clippy::enum_variant_names)]
+        $vis enum $enum_ident $(<$($generics),*>)?{
+            $(#[doc = $variant_doc])*
+            #[allow(missing_docs)]
+            $variant_ident {
+                $(
+                    $(#[doc = $field_doc])*
+                    $field_ident : $field_ty
+                ),*
+            }
+        }
+    };
+    (
+        $(#[doc = $enum_doc:expr])*
+        #[derive($($derive:path),*)]
+        $vis:vis enum $enum_ident:ident $(<$($generics:tt),*>)? {
+            $(
+                $(#[doc = $variant_doc:expr])*
+                $variant_ident:ident {
+                    $(
+                        $(#[doc = $field_doc:expr])*
+                        $field_ident:ident : $field_ty:ty
+                    ),* $(,)?
+                }
+            ),* $(,)?
+        }
+    ) => {
+        $(#[doc = $enum_doc])*
+        #[derive($($derive),*)]
+        #[serde(tag = "type")]
+        #[serde(rename_all = "snake_case")]
+        #[allow(clippy::enum_variant_names)]
+        $vis enum $enum_ident $(<$($generics),*>)?{
+            $(
+                $(#[doc = $variant_doc])*
+                #[allow(missing_docs)]
+                $variant_ident {
+                    $(
+                        $(#[doc = $field_doc])*
+                        $field_ident : $field_ty
+                    ),*
+                }
+            ),*
+        }
+    };
+}
+
 /// Specific error codes reserved by Maelstrom.
 #[derive(Debug, Serialize_repr, Deserialize_repr, PartialEq, Eq)]
 #[repr(u8)]
@@ -100,92 +217,13 @@ pub enum MaelstromErrorCode {
     TxnConflict = 30,
 }
 
-/// A macro utility to define message kinds.
-#[macro_export]
-macro_rules! define_msg_kind {
-    (
-        $(#[doc = $enum_doc:expr])*
-        #[derive($($derive:path),*)]
-        $vis:vis enum $enum_ident:ident {
-            $(#[doc = $variant_doc:expr])*
-            $variant_ident:ident {
-                $(
-                    $(#[doc = $field_doc:expr])*
-                    $field_ident:ident : $field_ty:ty
-                ),+ $(,)?
-            } $(,)?
-        }
-    ) =>
-    {
-        $(#[doc = $enum_doc])*
-        #[derive($($derive),*)]
-        #[serde(tag = "type")]
-        #[serde(rename_all = "snake_case")]
-        $vis enum $enum_ident{
-            $(#[doc = $variant_doc])*
-            #[allow(missing_docs)]
-            $variant_ident($variant_ident),
-        }
-
-        impl $enum_ident {
-            #[doc = "Converts [`"]
-            #[doc = stringify!($enum_ident)]
-            #[doc = "`] into it's concrete struct type [`"]
-            #[doc = stringify!($variant_ident)]
-            #[doc = "`]."]
-            #[must_use]
-            $vis fn into_inner(self) -> $variant_ident {
-                match self {
-                    $enum_ident::$variant_ident(inner) => inner
-                }
-            }
-        }
-
-        #[doc = "Concrete data-holding struct for the [`"]
-        #[doc = stringify!($enum_ident)]
-        #[doc = "`] message kind"]
-        #[derive($($derive),*)]
-        $vis struct $variant_ident {
-            $(
-                $(#[doc = $field_doc])*
-                $vis $field_ident : $field_ty,
-            )+
-        }
-    };
-    (
-        $(#[doc = $enum_doc:expr])*
-        #[derive($($derive:path),*)]
-        $vis:vis enum $enum_ident:ident $(<$lifetime:lifetime>)? {
-            $(
-                $(#[doc = $variant_doc:expr])*
-                $variant_ident:ident {
-                    $(
-                        $(#[doc = $field_doc:expr])*
-                        $field_ident:ident : $field_ty:ty
-                    ),* $(,)?
-                }
-            ),* $(,)?
-        }
-    ) => {
-        $(#[doc = $enum_doc])*
-        #[derive($($derive),*)]
-        #[serde(tag = "type")]
-        #[serde(rename_all = "snake_case")]
-        #[allow(clippy::enum_variant_names)]
-        $vis enum $enum_ident $(<$lifetime>)? {
-            $(
-                $(#[doc = $variant_doc:expr])*
-                #[allow(missing_docs)]
-                $variant_ident {
-                    $(
-                        $(#[doc = $field_doc:expr])*
-                        $field_ident : $field_ty
-                    ),*
-                }
-            ),*
-        }
-    };
-}
+define_msg_kind!(
+    ///
+    #[derive(Debug, Serialize, Deserialize)]
+    pub enum ErrorMessage {
+        Error { code: u8 },
+    }
+);
 
 define_msg_kind!(
     /// Initial request that Maelstrom sends
@@ -227,5 +265,31 @@ define_msg_kind!(
     #[derive(Debug, Serialize)]
     pub enum TopologyResponse {
         TopologyOk {},
+    }
+);
+
+define_msg_kind!(
+    /// A request that nodes send to interact with the key-value service.
+    #[derive(Debug, Serialize)]
+    pub enum KvRequest<K, V> {
+        /// Reads the value associated with the given key.
+        Read { key: K },
+        /// Overwrites the given value to the given key. Creates a new
+        /// entry if the the key doesn't already exists.
+        Write { key: K, value: V },
+        /// Atomically compare-and-sets the value of the given key key: if
+        /// the value of key is currently from, sets it to to. Returns error
+        /// 20 if the key doesn't exist, and 22 if the from value doesn't match.
+        Cas { key: K, from: V, to: V },
+    }
+);
+
+define_msg_kind!(
+    /// Response to [`TopologyRequest`].
+    #[derive(Debug, Deserialize)]
+    pub enum KvResponse<V> {
+        ReadOk { value: V },
+        WriteOk {},
+        CasOk {},
     }
 );
