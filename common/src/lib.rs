@@ -25,10 +25,10 @@ pub use indexmap::{map::Slice as IndexMapSlice, set::Slice as IndexSetSlice};
 pub use json::Json;
 pub use rustc_hash::{FxHashMap, FxHashSet};
 
-pub use id::{ClientId, MessageId, NodeId, SiteId};
+pub use id::{ClientId, MessageId, NodeId, ServiceId, SiteId};
 pub use message::{
-    ErrorMessage, Init, InitRequest, InitResponse, KvRequest, KvResponse, MaelstromErrorCode,
-    Message, Request, Response, Topology, TopologyRequest, TopologyResponse,
+    Init, InitRequest, InitResponse, KvRequest, KvResponse, MaelstromErrorCode, Message, Request,
+    Response, Topology, TopologyRequest, TopologyResponse,
 };
 pub use node::{Node, NodeBuilder, NodeChannel, RpcCallback};
 pub use utils::{HealthyMutex, Never, TupleMap};

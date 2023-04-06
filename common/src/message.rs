@@ -218,14 +218,6 @@ pub enum MaelstromErrorCode {
 }
 
 define_msg_kind!(
-    ///
-    #[derive(Debug, Serialize, Deserialize)]
-    pub enum ErrorMessage {
-        Error { code: u8 },
-    }
-);
-
-define_msg_kind!(
     /// Initial request that Maelstrom sends
     /// after node initialization.
     #[derive(Debug, Deserialize)]
@@ -285,11 +277,12 @@ define_msg_kind!(
 );
 
 define_msg_kind!(
-    /// Response to [`TopologyRequest`].
+    /// Response to [`KvRequest`].
     #[derive(Debug, Deserialize)]
     pub enum KvResponse<V> {
         ReadOk { value: V },
         WriteOk {},
         CasOk {},
+        Error { code: MaelstromErrorCode },
     }
 );

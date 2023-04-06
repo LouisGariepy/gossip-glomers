@@ -51,8 +51,6 @@ async fn main() {
                                 let node = Arc::clone(&node);
                                 let neighbour = *neighbour;
                                 async move {
-                                    // Send broadcast request and await response
-
                                     // Create the RPC request
                                     // Send RPC request and await response
                                     let response = rpc!(

@@ -30,6 +30,7 @@ enum Challenge {
         #[arg(default_value_t = Topology::Tree4)]
         topology: Topology,
     },
+    GrowOnlyCounter,
 }
 
 impl Challenge {
@@ -42,6 +43,7 @@ impl Challenge {
             Challenge::BroadcastC => "broadcast-c",
             Challenge::BroadcastD { .. } => "broadcast-d",
             Challenge::BroadcastE { .. } => "broadcast-e",
+            Challenge::GrowOnlyCounter => "grow-only-counter",
         }
     }
 }
@@ -165,6 +167,14 @@ fn main() -> anyhow::Result<()> {
             };
             c
         }
+        Challenge::GrowOnlyCounter => command
+            .arg("test")
+            .args(["-w", "g-counter"])
+            .args(["--bin", &binary_path.to_string_lossy()])
+            .args(["--node-count", "3"])
+            .args(["--time-limit", "20"])
+            .args(["--rate", "100"])
+            .args(["--nemesis", "partition"]),
     };
 
     command

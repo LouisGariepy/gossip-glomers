@@ -9,9 +9,21 @@ pub struct MessageId(pub(crate) u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientId(u64);
 
+impl From<ClientId> for u64 {
+    fn from(value: ClientId) -> Self {
+        value.0
+    }
+}
+
 /// A type representing the ID of a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(u64);
+
+impl From<NodeId> for u64 {
+    fn from(value: NodeId) -> Self {
+        value.0
+    }
+}
 
 /// A type representing the ID of a site.
 ///
@@ -27,11 +39,18 @@ pub enum SiteId {
     Service(ServiceId),
 }
 
+/// A type representing the ID of a service.
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServiceId {
-    /// A Sequentially consisten key-value service.
+    /// A sequentially consistent key-value service.
+    ///
+    /// **Note:** Unique writes, in the context of the key-value store
+    /// provided by Maelstrom, force unique states.
+    /// [See this comment](https://github.com/jepsen-io/maelstrom/issues/39#issuecomment-1476139634).
     SeqKv,
+    /// A linearly consistent key-value service.
+    LinKv,
 }
 
 impl From<ClientId> for SiteId {
@@ -43,6 +62,12 @@ impl From<ClientId> for SiteId {
 impl From<NodeId> for SiteId {
     fn from(value: NodeId) -> Self {
         SiteId::Node(value)
+    }
+}
+
+impl From<ServiceId> for SiteId {
+    fn from(value: ServiceId) -> Self {
+        SiteId::Service(value)
     }
 }
 
@@ -97,6 +122,18 @@ impl<'de> Deserialize<'de> for SiteId {
         D: serde::Deserializer<'de>,
     {
         let site_id_string = String::deserialize(deserializer)?;
+        if site_id_string == "seq-kv" {
+            return Ok(SiteId::Service(ServiceId::SeqKv));
+        }
+        match site_id_string.as_str() {
+            "seq-kv" => {
+                return Ok(SiteId::Service(ServiceId::SeqKv));
+            }
+            "lin-kv" => {
+                return Ok(SiteId::Service(ServiceId::LinKv));
+            }
+            _ => {}
+        };
         let mut site_id_chars = site_id_string.chars();
         let site_char = site_id_chars.next();
         match site_char {
