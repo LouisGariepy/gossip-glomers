@@ -31,7 +31,7 @@ pub use message::{
     Response, Topology, TopologyRequest, TopologyResponse,
 };
 pub use node::{Node, NodeBuilder, NodeChannel, RpcCallback};
-pub use utils::{HealthyMutex, Never, TupleMap};
+pub use utils::{HealthyMutex, Never, PushGetIndex, SerializableIterator, TupleMap};
 
 /// A fast hashset that preserves insertion order.
 pub type FxIndexSet<T> = IndexSet<T, BuildHasherDefault<FxHasher>>;

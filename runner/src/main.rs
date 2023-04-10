@@ -30,7 +30,8 @@ enum Challenge {
         #[arg(default_value_t = Topology::Tree4)]
         topology: Topology,
     },
-    GrowOnlyCounter,
+    Counter,
+    KafkaA,
 }
 
 impl Challenge {
@@ -43,7 +44,8 @@ impl Challenge {
             Challenge::BroadcastC => "broadcast-c",
             Challenge::BroadcastD { .. } => "broadcast-d",
             Challenge::BroadcastE { .. } => "broadcast-e",
-            Challenge::GrowOnlyCounter => "grow-only-counter",
+            Challenge::Counter => "counter",
+            Challenge::KafkaA => "kafka-a",
         }
     }
 }
@@ -167,14 +169,22 @@ fn main() -> anyhow::Result<()> {
             };
             c
         }
-        Challenge::GrowOnlyCounter => command
+        Challenge::Counter => command
             .arg("test")
-            .args(["-w", "g-counter"])
+            .args(["-w", "counter"])
             .args(["--bin", &binary_path.to_string_lossy()])
             .args(["--node-count", "3"])
             .args(["--time-limit", "20"])
             .args(["--rate", "100"])
             .args(["--nemesis", "partition"]),
+        Challenge::KafkaA => command
+            .arg("test")
+            .args(["-w", "kafka"])
+            .args(["--bin", &binary_path.to_string_lossy()])
+            .args(["--node-count", "1"])
+            .args(["--time-limit", "20"])
+            .args(["--rate", "1000"])
+            .args(["--concurrency", "2n"]),
     };
 
     command

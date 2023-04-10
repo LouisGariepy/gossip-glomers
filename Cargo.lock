@@ -123,12 +123,21 @@ dependencies = [
 name = "common"
 version = "0.1.0"
 dependencies = [
- "futures",
  "indexmap",
  "rustc-hash",
  "serde",
  "serde_json",
  "serde_repr",
+ "tokio",
+]
+
+[[package]]
+name = "counter"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "futures",
+ "serde",
  "tokio",
 ]
 
@@ -252,16 +261,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "grow-only-counter"
-version = "0.1.0"
-dependencies = [
- "common",
- "futures",
- "serde",
- "tokio",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -325,6 +324,16 @@ name = "itoa"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "453ad9f582a441959e5f0d088b02ce04cfe8d51a8eaf077f12ac6d3e94164ca6"
+
+[[package]]
+name = "kafka-a"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "libc"

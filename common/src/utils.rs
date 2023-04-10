@@ -1,4 +1,7 @@
-use std::sync::{Mutex, MutexGuard};
+use std::{
+    cell::RefCell,
+    sync::{Mutex, MutexGuard},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +16,21 @@ pub trait TupleMap {
 impl<T1, T2> TupleMap for (T1, T2) {
     fn map<U>(self, f: fn(Self) -> U) -> U {
         f(self)
+    }
+}
+
+/// A trait for insertions into collections that have a notion
+/// of indexing.
+pub trait PushGetIndex<T> {
+    /// Pushes the value and returns the insertion index.
+    fn push_get_index(&mut self, value: T) -> usize;
+}
+
+impl<T> PushGetIndex<T> for Vec<T> {
+    fn push_get_index(&mut self, value: T) -> usize {
+        let index = self.len();
+        self.push(value);
+        index
     }
 }
 
@@ -36,5 +54,30 @@ impl<T> HealthyMutex<T> {
     /// Creates a new mutex protecting a value.
     pub fn new(value: T) -> Self {
         HealthyMutex(Mutex::new(value))
+    }
+}
+
+/// A trait for iterators that can be serialized.
+///
+/// Serializing is usually understood as a process without side-effects.
+/// To serialize an iterator, one must introduce side-effects to advance
+/// the iterator. This requires using interior mutability to deal with
+/// [`serde`]'s API.
+#[derive(Debug)]
+pub struct SerializableIterator<I>(RefCell<I>);
+
+impl<Item: Serialize, Iter: Iterator<Item = Item>> SerializableIterator<Iter> {
+    /// Creates a new [`SerializableIterator`] from the given iterator.
+    pub fn new(iter: Iter) -> Self {
+        Self(RefCell::new(iter))
+    }
+}
+
+impl<Item: Serialize, Iter: Iterator<Item = Item>> Serialize for SerializableIterator<Iter> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_seq(self.0.borrow_mut().by_ref())
     }
 }
