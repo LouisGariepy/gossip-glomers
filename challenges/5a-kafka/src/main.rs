@@ -2,7 +2,6 @@ use std::{
     iter::{Copied, Enumerate, Skip},
     slice::Iter,
     sync::Arc,
-    vec::IntoIter,
 };
 
 use common::{
@@ -15,7 +14,7 @@ struct NodeState {
     logs: HealthyMutex<FxHashMap<String, Vec<u64>>>,
 }
 
-type Node = common::Node<NodeState, InboundRequest, OutboundResponse, Never, Never>;
+type Node = common::Node<NodeState, InboundRequest, OutboundResponse<'static>, Never, Never>;
 
 fn main() {
     NodeBuilder::init()
@@ -48,14 +47,6 @@ async fn request_handler(node: Arc<Node>, request_msg: Message<Request<InboundRe
                 };
                 poll_ok.insert(key, SerializableIterator::new(values));
             }
-            // node.serialize_response(Message {
-            //     src: request_msg.dest,
-            //     dest: request_msg.src,
-            //     body: Response {
-            //         in_reply_to: request_msg.body.msg_id,
-            //         kind: OutboundResponse::PollOk { msgs: poll_ok },
-            //     },
-            // });
             respond!(
                 node,
                 request_msg,
@@ -79,19 +70,12 @@ define_msg_kind!(
 
 define_msg_kind!(
     #[derive(Debug, Serialize)]
-    pub enum OutboundResponse {
+    pub enum OutboundResponse<'a> {
         SendOk {
             offset: usize,
         },
         PollOk {
-            msgs: FxHashMap<
-                String,
-                SerializableIterator<
-                    std::iter::Skip<
-                        std::iter::Enumerate<std::iter::Copied<std::slice::Iter<'static, u64>>>,
-                    >,
-                >,
-            >,
+            msgs: FxHashMap<String, SerializableIterator<Skip<Enumerate<Copied<Iter<'a, u64>>>>>>,
         },
         CommitOffsetsOk {},
         ListCommittedOffsetsOk {

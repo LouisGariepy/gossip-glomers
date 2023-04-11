@@ -1,6 +1,5 @@
 [workspace]
 members = ["runner", "common", "challenges/*"]
-default-members = ["runner"]
 
 [workspace.dependencies]
 serde = { version = "1.0.156", features = ["derive"] }
