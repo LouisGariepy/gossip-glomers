@@ -4,7 +4,7 @@ use std::{
     marker::PhantomData,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     time::Duration,
 };
@@ -15,8 +15,10 @@ use tokio::sync::oneshot;
 
 use crate::{
     id::{MessageId, NodeId},
-    message::{InitRequest, InitResponse, Message, MessageType, Request, Response},
-    Json,
+    message::{
+        InitRequest, InitResponse, Message, MessageType, MessageWithLifetime, Request, Response,
+    },
+    HealthyMutex, Json,
 };
 
 /// Type that allows RPC tasks to be awoken.
@@ -37,7 +39,7 @@ pub struct Node<State, IReq, ORes, OReq, IRes> {
     pub state: State,
     /// A map containing [`RpcCallback`]s, identified by the
     /// [`MessageId`] of the corresponding RPC request.
-    pub rpc_callbacks: Mutex<FxHashMap<MessageId, RpcCallback<IRes>>>,
+    rpc_callbacks: HealthyMutex<FxHashMap<MessageId, RpcCallback<IRes>>>,
     /// Standard output. Allows nodes to send messages.
     stdout: Stdout,
     /// Atomic counter for message IDs.
@@ -53,7 +55,7 @@ pub struct Node<State, IReq, ORes, OReq, IRes> {
 impl<State, IReq, ORes, OReq, IRes> Node<State, IReq, ORes, OReq, IRes>
 where
     IReq: DeserializeOwned,
-    ORes: Serialize,
+    ORes: MessageWithLifetime,
     OReq: Serialize,
     IRes: std::fmt::Debug + DeserializeOwned + Send + Sync + 'static,
     State: Send + Sync + 'static,
@@ -64,7 +66,10 @@ where
     }
 
     /// Serializes a request message to JSON and returns it along with it's message id.
-    pub fn serialize_response(&self, req: Message<Response<ORes>>) -> Json {
+    pub fn serialize_response<'a>(&'a self, req: Message<Response<ORes::Msg<'a>>>) -> Json
+    where
+        ORes::Msg<'a>: Serialize,
+    {
         req.into_json()
     }
 
@@ -86,7 +91,7 @@ where
     pub async fn rpc(&self, msg_id: MessageId, ser_req: Json) -> Option<Message<Response<IRes>>> {
         let (sender, receiver) = oneshot::channel();
         // Insert a new callback
-        self.rpc_callbacks.lock().unwrap().insert(msg_id, sender);
+        self.rpc_callbacks.lock().insert(msg_id, sender);
         // Send RPC request
         writeln!(self.stdout.lock(), "{}", ser_req.as_str()).unwrap();
         // Wait to receive response
@@ -97,7 +102,7 @@ where
             Err(_) => None,
         };
         // Remove callback and return result
-        self.rpc_callbacks.lock().unwrap().remove(&msg_id);
+        self.rpc_callbacks.lock().remove(&msg_id);
         result
     }
 
@@ -136,11 +141,7 @@ where
                 // Response are sent to RPC tasks via a callback
                 MessageType::Response(response) => {
                     // Get the callback corresponding to the RPC request's id
-                    let callback = self
-                        .rpc_callbacks
-                        .lock()
-                        .unwrap()
-                        .remove(&response.in_reply_to);
+                    let callback = self.rpc_callbacks.lock().remove(&response.in_reply_to);
                     // If this callback still exists (i.e. it hasn't timed
                     // out yet), send the response message over the callback
                     if let Some(callback) = callback {
@@ -264,7 +265,7 @@ impl<State> NodeBuilder<State> {
             node_ids: self.node_ids,
             state: self.state,
             stdout: self.channel.stdout,
-            rpc_callbacks: Mutex::default(),
+            rpc_callbacks: HealthyMutex::default(),
             phantom_ireq: PhantomData,
             phantom_ores: PhantomData,
             phantom_oreq: PhantomData,

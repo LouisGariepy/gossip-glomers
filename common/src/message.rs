@@ -286,3 +286,7 @@ define_msg_kind!(
         Error { code: MaelstromErrorCode },
     }
 );
+
+pub trait MessageWithLifetime {
+    type Msg<'a>;
+}

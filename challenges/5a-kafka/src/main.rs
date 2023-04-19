@@ -1,12 +1,13 @@
 use std::{
-    iter::{Copied, Enumerate, Skip},
+    collections::hash_map::IntoIter,
+    iter::{Enumerate, FilterMap, Skip},
     slice::Iter,
     sync::Arc,
 };
 
 use common::{
-    define_msg_kind, respond, FxHashMap, HealthyMutex, Message, Never, NodeBuilder, PushGetIndex,
-    Request, Response, SerializableIterator,
+    respond, FxHashMap, HealthyMutex, Message, MessageWithLifetime, Never, NodeBuilder,
+    PushGetIndex, Request, Response, SerializableIterator,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,19 +39,22 @@ async fn request_handler(node: Arc<Node>, request_msg: Message<Request<InboundRe
             respond!(node, request_msg, OutboundResponse::SendOk { offset });
         }
         InboundRequest::Poll { offsets } => {
-            let mut poll_ok = FxHashMap::default();
             let guard = node.state.logs.lock();
-            for (key, offset) in offsets {
-                let values = match guard.get(&key) {
-                    Some(a) => a.iter().copied().enumerate().skip(offset - 1),
-                    None => continue,
-                };
-                poll_ok.insert(key, SerializableIterator::new(values));
-            }
+            let poll_ok = offsets.into_iter().filter_map(|(key, offset)| {
+                guard.get(&key).map(move |a| {
+                    (
+                        key,
+                        SerializableIterator::new(a.iter().enumerate().skip(offset - 1)),
+                    )
+                })
+            });
+            serde_json::to_writer(String::new(), value)
             respond!(
                 node,
                 request_msg,
-                OutboundResponse::PollOk { msgs: poll_ok }
+                OutboundResponse::PollOk {
+                    msgs: SerializableIterator::new(poll_ok)
+                }
             );
         }
         InboundRequest::CommitOffsets { offsets } => todo!(),
@@ -58,28 +62,39 @@ async fn request_handler(node: Arc<Node>, request_msg: Message<Request<InboundRe
     }
 }
 
-define_msg_kind!(
-    #[derive(Debug, Deserialize)]
-    pub enum InboundRequest {
-        Send { key: String, msg: u64 },
-        Poll { offsets: FxHashMap<String, usize> },
-        CommitOffsets { offsets: FxHashMap<String, usize> },
-        ListCommittedOffsets { keys: Vec<String> },
-    }
-);
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum InboundRequest {
+    Send { key: String, msg: u64 },
+    Poll { offsets: FxHashMap<String, usize> },
+    CommitOffsets { offsets: FxHashMap<String, usize> },
+    ListCommittedOffsets { keys: Vec<String> },
+}
 
-define_msg_kind!(
-    #[derive(Debug, Serialize)]
-    pub enum OutboundResponse<'a> {
-        SendOk {
-            offset: usize,
-        },
-        PollOk {
-            msgs: FxHashMap<String, SerializableIterator<Skip<Enumerate<Copied<Iter<'a, u64>>>>>>,
-        },
-        CommitOffsetsOk {},
-        ListCommittedOffsetsOk {
-            offsets: FxHashMap<String, usize>,
-        },
-    }
-);
+impl MessageWithLifetime for InboundRequest {
+    type Msg<'a> = InboundRequest;
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum OutboundResponse<'a> {
+    SendOk { offset: usize },
+    PollOk { msgs: PollOk<'a> },
+    CommitOffsetsOk {},
+    ListCommittedOffsetsOk { offsets: FxHashMap<String, usize> },
+}
+
+impl<'a> MessageWithLifetime for OutboundResponse<'a> {
+    type Msg<'b> = OutboundResponse<'b>;
+}
+
+type PollOk<'a> = SerializableIterator<
+    FilterMap<
+        IntoIter<String, usize>,
+        fn(
+            (String, usize),
+        ) -> Option<(String, SerializableIterator<Skip<Enumerate<Iter<'a, u64>>>>)>,
+    >,
+>;

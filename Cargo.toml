@@ -1,5 +1,10 @@
 [workspace]
-members = ["runner", "common", "challenges/*"]
+members = [
+    "runner",
+    "common",
+    "challenges/5a-kafka",
+    # "challenges/*"
+]
 
 [workspace.dependencies]
 serde = { version = "1.0.156", features = ["derive"] }
