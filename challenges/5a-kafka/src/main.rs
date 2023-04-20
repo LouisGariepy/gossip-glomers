@@ -1,13 +1,8 @@
-use std::{
-    collections::hash_map::IntoIter,
-    iter::{Enumerate, FilterMap, Skip},
-    slice::Iter,
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use common::{
-    respond, FxHashMap, HealthyMutex, Message, MessageWithLifetime, Never, NodeBuilder,
-    PushGetIndex, Request, Response, SerializableIterator,
+    respond, FxHashMap, HealthyMutex, Message, Never, NodeBuilder, PushGetIndex, Request, Response,
+    SerIterMapJson, SerIterSeqJson, SerializeIteratorMap, SerializeIteratorSeq,
 };
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +10,7 @@ struct NodeState {
     logs: HealthyMutex<FxHashMap<String, Vec<u64>>>,
 }
 
-type Node = common::Node<NodeState, InboundRequest, OutboundResponse<'static>, Never, Never>;
+type Node = common::Node<NodeState, InboundRequest, OutboundResponse, Never, Never>;
 
 fn main() {
     NodeBuilder::init()
@@ -39,22 +34,22 @@ async fn request_handler(node: Arc<Node>, request_msg: Message<Request<InboundRe
             respond!(node, request_msg, OutboundResponse::SendOk { offset });
         }
         InboundRequest::Poll { offsets } => {
-            let guard = node.state.logs.lock();
-            let poll_ok = offsets.into_iter().filter_map(|(key, offset)| {
-                guard.get(&key).map(move |a| {
-                    (
-                        key,
-                        SerializableIterator::new(a.iter().enumerate().skip(offset - 1)),
-                    )
-                })
-            });
-            serde_json::to_writer(String::new(), value)
+            let poll_ok = {
+                let logs_guard = node.state.logs.lock();
+                offsets
+                    .into_iter()
+                    .filter_map(|(key, offset)| {
+                        logs_guard.get(&key).map(|a| {
+                            let logs = a.iter().copied().enumerate().skip(offset - 1).to_json_seq();
+                            (key, logs)
+                        })
+                    })
+                    .to_json_map()
+            };
             respond!(
                 node,
                 request_msg,
-                OutboundResponse::PollOk {
-                    msgs: SerializableIterator::new(poll_ok)
-                }
+                OutboundResponse::PollOk { msgs: poll_ok }
             );
         }
         InboundRequest::CommitOffsets { offsets } => todo!(),
@@ -72,29 +67,18 @@ pub enum InboundRequest {
     ListCommittedOffsets { keys: Vec<String> },
 }
 
-impl MessageWithLifetime for InboundRequest {
-    type Msg<'a> = InboundRequest;
-}
-
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-pub enum OutboundResponse<'a> {
-    SendOk { offset: usize },
-    PollOk { msgs: PollOk<'a> },
+pub enum OutboundResponse {
+    SendOk {
+        offset: usize,
+    },
+    PollOk {
+        msgs: SerIterMapJson<String, SerIterSeqJson<(usize, u64)>>,
+    },
     CommitOffsetsOk {},
-    ListCommittedOffsetsOk { offsets: FxHashMap<String, usize> },
+    ListCommittedOffsetsOk {
+        offsets: FxHashMap<String, usize>,
+    },
 }
-
-impl<'a> MessageWithLifetime for OutboundResponse<'a> {
-    type Msg<'b> = OutboundResponse<'b>;
-}
-
-type PollOk<'a> = SerializableIterator<
-    FilterMap<
-        IntoIter<String, usize>,
-        fn(
-            (String, usize),
-        ) -> Option<(String, SerializableIterator<Skip<Enumerate<Iter<'a, u64>>>>)>,
-    >,
->;

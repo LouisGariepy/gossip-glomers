@@ -6,13 +6,8 @@ use common::{
 };
 use serde::{Deserialize, Serialize};
 
-type Node = common::Node<
-    NodeState,
-    InboundRequest,
-    OutboundResponse<'static>,
-    OutboundRequest,
-    InboundResponse,
->;
+type Node<'a> =
+    common::Node<NodeState, InboundRequest, OutboundResponse<'a>, OutboundRequest, InboundResponse>;
 
 #[derive(Debug, Default)]
 struct NodeState {
@@ -45,11 +40,10 @@ async fn main() {
                     // then start the broadcasting procedure
                     if inserted {
                         // Broadcast to all susceptible neighbours
-                        for neighbour in &node.state.neighbours {
+                        for neighbour in node.state.neighbours.iter().copied() {
                             // Spawn a task for this RPC request
                             tokio::spawn({
                                 let node = Arc::clone(&node);
-                                let neighbour = *neighbour;
                                 async move {
                                     // Create the RPC request
                                     // Send RPC request and await response

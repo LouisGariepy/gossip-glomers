@@ -2,36 +2,44 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use common::{define_msg_kind, respond, Message, Never, NodeBuilder, Response};
+use common::{respond, Message, NodeBuilder, Response};
 
-type Node = common::Node<(), InboundRequest, OutboundResponse, Never, Never>;
+type Node = common::SimpleNode<(), InboundRequest, OutboundResponse>;
 
 #[tokio::main]
 async fn main() {
     NodeBuilder::init()
-        .build()
+        .build_simple()
         .run(|node: Arc<Node>, request| async move {
             // Send echo back as response
             respond!(
                 node,
                 request,
-                OutboundResponse::EchoOk(EchoOk {
-                    echo: request.body.kind.into_inner().echo,
-                })
+                OutboundResponse::EchoOk {
+                    echo: request.body.kind.echo(),
+                }
             );
         });
 }
 
-define_msg_kind!(
-    #[derive(Debug, Deserialize)]
-    enum InboundRequest {
-        Echo { echo: String },
-    }
-);
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum InboundRequest {
+    Echo { echo: String },
+}
 
-define_msg_kind!(
-    #[derive(Debug, Serialize)]
-    enum OutboundResponse {
-        EchoOk { echo: String },
+impl InboundRequest {
+    fn echo(self) -> String {
+        match self {
+            InboundRequest::Echo { echo } => echo,
+        }
     }
-);
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum OutboundResponse {
+    EchoOk { echo: String },
+}

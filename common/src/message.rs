@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::{
-    id::{MessageId, NodeId, SiteId},
+    id::{MsgId, NodeId, SiteId},
     TopologyMap,
 };
 
@@ -23,7 +23,7 @@ pub enum MessageType<RequestBody, ResponseBody> {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Request<Kind> {
     /// Requests must have a message ID.
-    pub msg_id: MessageId,
+    pub msg_id: MsgId,
     /// This field holds the data for the specific
     /// kind of request.
     #[serde(flatten)]
@@ -35,7 +35,7 @@ pub struct Request<Kind> {
 pub struct Response<Kind> {
     /// Responses must have an ID corresponding
     /// to a previously sent request.
-    pub in_reply_to: MessageId,
+    pub in_reply_to: MsgId,
     /// This field holds the data for the specific
     /// kind of response.
     #[serde(flatten)]
@@ -286,7 +286,3 @@ define_msg_kind!(
         Error { code: MaelstromErrorCode },
     }
 );
-
-pub trait MessageWithLifetime {
-    type Msg<'a>;
-}

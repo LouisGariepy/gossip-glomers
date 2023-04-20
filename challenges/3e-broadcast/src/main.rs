@@ -144,7 +144,7 @@ fn broadcasting_task(node: Arc<Node>) {
             interval.tick().await;
 
             let (broadcast_timestamp, messages) = {
-                let messages_guard = &node.state.messages.lock();
+                let messages_guard = node.state.messages.lock();
 
                 // If there were no new messages since last broadcast
                 // then skip this broadcast
@@ -241,7 +241,7 @@ define_msg_kind!(
     enum InboundRequest {
         Read {},
         Broadcast { message: u64 },
-        BroadcastMany { messages: FxIndexSet<u64> },
+        BroadcastMany { messages: Vec<u64> },
     }
 );
 

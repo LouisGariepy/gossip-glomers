@@ -14,10 +14,8 @@ use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::oneshot;
 
 use crate::{
-    id::{MessageId, NodeId},
-    message::{
-        InitRequest, InitResponse, Message, MessageType, MessageWithLifetime, Request, Response,
-    },
+    id::{MsgId, NodeId},
+    message::{InitRequest, InitResponse, Message, MessageType, Request, Response},
     HealthyMutex, Json,
 };
 
@@ -27,6 +25,10 @@ pub type RpcCallback<IRes> = oneshot::Sender<Message<Response<IRes>>>;
 /// Type for the function that handles a [`Node`]'s inbound requests.
 type InboundRequestHandler<State, IReq, ORes, OReq, IRes, F> =
     fn(Arc<Node<State, IReq, ORes, OReq, IRes>>, Message<Request<IReq>>) -> F;
+
+/// Type for the function that handles a [`Node`]'s inbound requests.
+type SimpleInboundRequestHandler<State, IReq, ORes, F> =
+    fn(Arc<SimpleNode<State, IReq, ORes>>, Message<Request<IReq>>) -> F;
 
 /// A node abstraction. The main main item provided by this module. Nodes can hold
 /// state, receive and send messages
@@ -39,7 +41,7 @@ pub struct Node<State, IReq, ORes, OReq, IRes> {
     pub state: State,
     /// A map containing [`RpcCallback`]s, identified by the
     /// [`MessageId`] of the corresponding RPC request.
-    rpc_callbacks: HealthyMutex<FxHashMap<MessageId, RpcCallback<IRes>>>,
+    rpc_callbacks: HealthyMutex<FxHashMap<MsgId, RpcCallback<IRes>>>,
     /// Standard output. Allows nodes to send messages.
     stdout: Stdout,
     /// Atomic counter for message IDs.
@@ -55,31 +57,28 @@ pub struct Node<State, IReq, ORes, OReq, IRes> {
 impl<State, IReq, ORes, OReq, IRes> Node<State, IReq, ORes, OReq, IRes>
 where
     IReq: DeserializeOwned,
-    ORes: MessageWithLifetime,
+    ORes: Serialize,
     OReq: Serialize,
     IRes: std::fmt::Debug + DeserializeOwned + Send + Sync + 'static,
     State: Send + Sync + 'static,
 {
     /// Atomically increment the node's message counter and return previous value.
-    pub fn next_msg_id(&self) -> MessageId {
-        MessageId(self.next_msg_id.fetch_add(1, Ordering::SeqCst))
+    pub fn next_msg_id(&self) -> MsgId {
+        MsgId(self.next_msg_id.fetch_add(1, Ordering::SeqCst))
     }
 
     /// Serializes a request message to JSON and returns it along with it's message id.
-    pub fn serialize_response<'a>(&'a self, req: Message<Response<ORes::Msg<'a>>>) -> Json
-    where
-        ORes::Msg<'a>: Serialize,
-    {
+    pub fn serialize_response(&self, req: Message<Response<ORes>>) -> Json<crate::json::Response> {
         req.into_json()
     }
 
     /// Sends a response message.
-    pub fn send_response(&self, res: Json) {
+    pub fn send_response(&self, res: Json<crate::json::Response>) {
         writeln!(self.stdout.lock(), "{}", res.as_str()).unwrap();
     }
 
     /// Serializes a request message to JSON and returns it along with it's message id.
-    pub fn serialize_request(&self, req: Message<Request<OReq>>) -> Json {
+    pub fn serialize_request(&self, req: Message<Request<OReq>>) -> Json<crate::json::Request> {
         req.into_json()
     }
 
@@ -88,7 +87,11 @@ where
     /// via the callback.
     ///
     /// If the RPC call times out, this function return `None`. Otherwise it returns the response.
-    pub async fn rpc(&self, msg_id: MessageId, ser_req: Json) -> Option<Message<Response<IRes>>> {
+    pub async fn rpc(
+        &self,
+        msg_id: MsgId,
+        ser_req: Json<crate::json::Request>,
+    ) -> Option<Message<Response<IRes>>> {
         let (sender, receiver) = oneshot::channel();
         // Insert a new callback
         self.rpc_callbacks.lock().insert(msg_id, sender);
@@ -173,7 +176,7 @@ pub struct NodeChannel {
 impl NodeChannel {
     /// Serializes a message to JSON and writes on a single line over STDOUT
     pub fn send_msg<Body: Serialize>(&self, msg: Message<Response<Body>>) {
-        writeln!(self.stdout.lock(), "{}", msg.into_json().as_str()).unwrap();
+        writeln!(self.stdout.lock(), "{}", msg.into_json::<()>().as_str()).unwrap();
     }
 
     /// Reads a single line from STDIN and deserializes it from JSON into a message.
@@ -274,6 +277,22 @@ impl<State> NodeBuilder<State> {
     }
 }
 
+impl<State> NodeBuilder<State> {
+    /// Consumes this builder and creates a [`SimpleNode`].
+    /// The [`SimpleNode`] will inherit this builder's state.
+    #[must_use]
+    pub fn build_simple<IReq, ORes>(self) -> Arc<SimpleNode<State, IReq, ORes>> {
+        Arc::new(SimpleNode {
+            node_id: self.node_id,
+            node_ids: self.node_ids,
+            state: self.state,
+            stdout: self.channel.stdout,
+            phantom_ireq: PhantomData,
+            phantom_ores: PhantomData,
+        })
+    }
+}
+
 /// Convenience macro to write RPC calls.
 #[macro_export]
 macro_rules! rpc {
@@ -305,4 +324,57 @@ macro_rules! respond {
         });
         $node.send_response(msg_ser);
     }};
+}
+
+/// A node abstraction. The main main item provided by this module. Nodes can hold
+/// state, receive and send messages
+pub struct SimpleNode<State, IReq, ORes> {
+    /// This [`Node`]'s ID.
+    pub node_id: NodeId,
+    /// The list of all participating [`Node`] IDs.
+    pub node_ids: Vec<NodeId>,
+    /// This [`Node`]'s state.
+    pub state: State,
+    /// Standard output. Allows nodes to send messages.
+    stdout: Stdout,
+    /// Zero-sized marker used to make the generic bounds more ergonomic for users.
+    phantom_ireq: PhantomData<fn(IReq)>,
+    /// Zero-sized marker to enforce the correct outbound response type.
+    phantom_ores: PhantomData<fn() -> ORes>,
+}
+
+impl<State, IReq, ORes> SimpleNode<State, IReq, ORes>
+where
+    IReq: DeserializeOwned,
+    ORes: Serialize,
+    State: Send + Sync + 'static,
+{
+    /// Serializes a request message to JSON and returns it along with it's message id.
+    pub fn serialize_response(&self, res: Message<Response<ORes>>) -> Json<crate::json::Response> {
+        res.into_json()
+    }
+
+    /// Sends a response message.
+    pub fn send_response(&self, res: Json<crate::json::Response>) {
+        writeln!(self.stdout.lock(), "{}", res.as_str()).unwrap();
+    }
+
+    /// Inbound message handler. It deserializes inbound request messages and dispatches
+    /// them to the request handler on a separate task.
+    pub fn run<F>(
+        self: Arc<Self>,
+        request_handler: SimpleInboundRequestHandler<State, IReq, ORes, F>,
+    ) where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        // Read lines from STDIN
+        let mut lines = stdin().lines();
+        while let Some(Ok(line)) = lines.next() {
+            eprintln!("{line}");
+            // Deserialize line into message
+            let request = Message::<Request<IReq>>::from_json_str(&line);
+            // Request are handled by the request handler in a separate task
+            tokio::spawn(request_handler(Arc::clone(&self), request));
+        }
+    }
 }

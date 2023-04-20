@@ -22,16 +22,16 @@ mod node;
 mod utils;
 
 pub use indexmap::{map::Slice as IndexMapSlice, set::Slice as IndexSetSlice};
-pub use json::Json;
+pub use json::{Json, SerIterMapJson, SerIterSeqJson, SerializeIteratorMap, SerializeIteratorSeq};
 pub use rustc_hash::{FxHashMap, FxHashSet};
 
-pub use id::{ClientId, MessageId, NodeId, ServiceId, SiteId};
+pub use id::{ClientId, MsgId, MsgIdGenerator, NodeId, ServiceId, SiteId};
 pub use message::{
-    Init, InitRequest, InitResponse, KvRequest, KvResponse, MaelstromErrorCode, Message,
-    MessageWithLifetime, Request, Response, Topology, TopologyRequest, TopologyResponse,
+    Init, InitRequest, InitResponse, KvRequest, KvResponse, MaelstromErrorCode, Message, Request,
+    Response, Topology, TopologyRequest, TopologyResponse,
 };
-pub use node::{Node, NodeBuilder, NodeChannel, RpcCallback};
-pub use utils::{HealthyMutex, Never, PushGetIndex, SerializableIterator, TupleMap};
+pub use node::{Node, NodeBuilder, NodeChannel, SimpleNode};
+pub use utils::{HealthyMutex, Never, PushGetIndex, TupleMap};
 
 /// A fast hashset that preserves insertion order.
 pub type FxIndexSet<T> = IndexSet<T, BuildHasherDefault<FxHasher>>;

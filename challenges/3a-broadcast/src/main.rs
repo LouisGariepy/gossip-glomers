@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use common::{
-    define_msg_kind, respond, FxIndexSet, HealthyMutex, Message, Never, NodeBuilder, NodeChannel,
-    NodeId, Response, TopologyRequest, TopologyResponse,
+    define_msg_kind, respond, FxIndexSet, HealthyMutex, Message, NodeBuilder, NodeChannel, NodeId,
+    Response, TopologyRequest, TopologyResponse,
 };
 use serde::{Deserialize, Serialize};
 
-type Node = common::Node<NodeState, InboundRequest, OutboundResponse<'static>, Never, Never>;
+type Node<'a> = common::SimpleNode<NodeState, InboundRequest, OutboundResponse<'a>>;
 
 #[derive(Debug, Default)]
 struct NodeState {
@@ -16,8 +16,10 @@ struct NodeState {
 
 #[tokio::main]
 async fn main() {
-    NodeBuilder::init().with_state(initialize_node).build().run(
-        |node: Arc<Node>, request| async move {
+    NodeBuilder::init()
+        .with_state(initialize_node)
+        .build_simple()
+        .run(|node: Arc<Node>, request| async move {
             match request.body.kind {
                 InboundRequest::Read {} => {
                     // Send this node's recorded messages
@@ -36,8 +38,7 @@ async fn main() {
                     respond!(node, request, OutboundResponse::BroadcastOk {});
                 }
             }
-        },
-    );
+        });
 }
 
 fn initialize_node(_: NodeId, channel: &mut NodeChannel) -> NodeState {

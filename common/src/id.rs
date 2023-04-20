@@ -1,9 +1,20 @@
+use std::sync::atomic::AtomicU64;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(transparent)]
 /// A type representing message IDs.
-pub struct MessageId(pub(crate) u64);
+pub struct MsgId(pub(crate) u64);
+
+#[derive(Default)]
+pub struct MsgIdGenerator(AtomicU64);
+
+impl MsgIdGenerator {
+    pub fn next(&self) -> MsgId {
+        MsgId(self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    }
+}
 
 /// A type representing the ID of a client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
