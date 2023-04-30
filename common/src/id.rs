@@ -7,10 +7,12 @@ use serde::{Deserialize, Serialize};
 /// A type representing message IDs.
 pub struct MsgId(pub(crate) u64);
 
+/// Type that atomically generates sequential IDs.
 #[derive(Default)]
 pub struct MsgIdGenerator(AtomicU64);
 
 impl MsgIdGenerator {
+    /// Generates the next ID.
     pub fn next(&self) -> MsgId {
         MsgId(self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
     }

@@ -1,59 +1,94 @@
 use std::sync::Arc;
 
-use common::{
-    respond, FxHashMap, HealthyMutex, Message, Never, NodeBuilder, PushGetIndex, Request, Response,
-    SerIterMapJson, SerIterSeqJson, SerializeIteratorMap, SerializeIteratorSeq,
-};
 use serde::{Deserialize, Serialize};
 
+use common::{
+    message::{Message, Request},
+    node::{self, respond, NodeBuilder, NodeTrait},
+    FxHashMap, HealthyMutex, PushGetIndex,
+};
+
+#[derive(Default)]
+struct Log {
+    commited: usize,
+    messages: Vec<u64>,
+}
+
+#[derive(Default)]
 struct NodeState {
-    logs: HealthyMutex<FxHashMap<String, Vec<u64>>>,
+    logs: HealthyMutex<FxHashMap<String, Log>>,
 }
 
-type Node = common::Node<NodeState, InboundRequest, OutboundResponse, Never, Never>;
+type Node = node::SimpleNode<InboundRequest, OutboundResponse, NodeState>;
 
-fn main() {
-    NodeBuilder::init()
-        .with_state(|_, _| NodeState {
-            logs: Default::default(),
-        })
-        .build()
-        .run(request_handler);
+#[tokio::main]
+async fn main() {
+    let builder = NodeBuilder::init().with_state(|_, _| NodeState::default());
+    Node::build(builder).run(|node, request| async { request_handler(node, request) });
 }
 
-async fn request_handler(node: Arc<Node>, request_msg: Message<Request<InboundRequest>>) {
-    match request_msg.body.kind {
+fn request_handler(node: Arc<Node>, request: Message<Request<InboundRequest>>) {
+    match request.body.kind {
         InboundRequest::Send { key, msg } => {
+            // Insert a new message in the log entry associated with the given key.
+            // Record the offset of the inserted message.
             let offset = node
                 .state
                 .logs
                 .lock()
                 .entry(key)
-                .or_insert(Default::default())
+                .or_default()
+                .messages
                 .push_get_index(msg);
-            respond!(node, request_msg, OutboundResponse::SendOk { offset });
+            respond!(node, request, OutboundResponse::SendOk { offset });
         }
         InboundRequest::Poll { offsets } => {
             let poll_ok = {
                 let logs_guard = node.state.logs.lock();
                 offsets
                     .into_iter()
+                    // Filter to keep only log entries that exist
                     .filter_map(|(key, offset)| {
-                        logs_guard.get(&key).map(|a| {
-                            let logs = a.iter().copied().enumerate().skip(offset - 1).to_json_seq();
-                            (key, logs)
+                        logs_guard.get(&key).map(|log| {
+                            // Get all the message from the given offset onwards.
+                            let log_messages = log
+                                .messages
+                                .iter()
+                                .copied()
+                                .enumerate()
+                                .skip(offset)
+                                .collect();
+                            (key, log_messages)
                         })
                     })
-                    .to_json_map()
+                    .collect()
+            };
+            respond!(node, request, OutboundResponse::PollOk { msgs: poll_ok });
+        }
+        InboundRequest::CommitOffsets { offsets } => {
+            {
+                let mut logs_guard = node.state.logs.lock();
+                // Set the commited offset for all the given logs.
+                for (key, offset) in offsets {
+                    logs_guard.get_mut(&key).unwrap().commited = offset;
+                }
+            }
+            respond!(node, request, OutboundResponse::CommitOffsetsOk {});
+        }
+        InboundRequest::ListCommittedOffsets { keys } => {
+            let offsets = {
+                let logs_guard = node.state.logs.lock();
+                // Get the commited offset of all the given keys that exist on this node.
+                keys.into_iter()
+                    .filter_map(|key| logs_guard.get(&key).map(|log| (key, log.commited)))
+                    .collect()
             };
             respond!(
                 node,
-                request_msg,
-                OutboundResponse::PollOk { msgs: poll_ok }
+                request,
+                OutboundResponse::ListCommittedOffsetsOk { offsets }
             );
         }
-        InboundRequest::CommitOffsets { offsets } => todo!(),
-        InboundRequest::ListCommittedOffsets { keys } => todo!(),
     }
 }
 
@@ -75,7 +110,7 @@ pub enum OutboundResponse {
         offset: usize,
     },
     PollOk {
-        msgs: SerIterMapJson<String, SerIterSeqJson<(usize, u64)>>,
+        msgs: FxHashMap<String, Vec<(usize, u64)>>,
     },
     CommitOffsetsOk {},
     ListCommittedOffsetsOk {

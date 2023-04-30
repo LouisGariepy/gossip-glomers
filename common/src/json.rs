@@ -5,9 +5,11 @@ use serde_json::value::{to_raw_value, RawValue};
 
 use crate::message::Message;
 
-pub struct Request;
+/// Marker type denoting a request that was serialized.
+pub struct JsonRequest;
 
-pub struct Response;
+/// Marker type denoting a response that was serialized.
+pub struct JsonResponse;
 
 /// A strongly-typed JSON type.
 ///

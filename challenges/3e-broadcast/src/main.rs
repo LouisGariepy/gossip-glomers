@@ -6,18 +6,21 @@ use std::{
     time::Duration,
 };
 
-use common::{
-    define_msg_kind, respond, rpc, FxHashMap, FxIndexSet, HealthyMutex, IndexSetSlice, Message,
-    NodeBuilder, NodeChannel, NodeId, Request, Response, TopologyRequest, TopologyResponse,
-};
 use serde::{Deserialize, Serialize};
 
-type Node = common::Node<
-    NodeState,
+use common::{
+    id::NodeId,
+    message::{Message, Request, Response, TopologyRequest, TopologyResponse},
+    node::{self, respond, rpc, NodeBuilder, NodeChannel, NodeTrait},
+    FxHashMap, FxIndexSet, HealthyMutex, IndexSetSlice,
+};
+
+type Node = node::Node<
     InboundRequest,
     OutboundResponse<'static>,
     OutboundRequest<'static>,
     InboundResponse,
+    NodeState,
 >;
 
 /// Interval between healing broadcasts
@@ -46,7 +49,8 @@ struct NodeState {
 #[tokio::main]
 async fn main() {
     // Build node
-    let node = NodeBuilder::init().with_state(initialize_node).build();
+    let builder = NodeBuilder::init().with_state(initialize_node);
+    let node = Node::build(builder);
     // Spawn background healing task
     healing_task(Arc::clone(&node));
     // Spawn background batch broadcasting task
@@ -55,7 +59,7 @@ async fn main() {
     node.run(request_handler);
 }
 
-fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
+fn initialize_node(id: NodeId, channel: &mut NodeChannel) -> NodeState {
     // Receive and respond to initial topology message
     let topology_request = channel.receive_msg::<TopologyRequest>();
     channel.send_msg(Message {
@@ -68,9 +72,9 @@ fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
     });
 
     // Obtain node neighbours from topology
-    let mut topology = topology_request.body.kind.into_inner().topology;
+    let mut topology = topology_request.body.kind.topology();
     let neighbours = topology
-        .remove(&node_id)
+        .remove(&id)
         .expect("the topology should include this node's neighbours");
 
     // Create empty map for failed broadcasts
@@ -165,9 +169,9 @@ fn broadcasting_task(node: Arc<Node>) {
                     .iter()
                     .copied()
                     .map(|neighbour| {
-                        let msg_id = node.next_msg_id();
+                        let msg_id = node.msg_id_gen.next();
                         let msg_ser = node.serialize_request(Message {
-                            src: node.node_id.into(),
+                            src: node.id.into(),
                             dest: neighbour.into(),
                             body: Request {
                                 msg_id,
@@ -236,35 +240,35 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
     }
 }
 
-define_msg_kind!(
-    #[derive(Debug, Deserialize)]
-    enum InboundRequest {
-        Read {},
-        Broadcast { message: u64 },
-        BroadcastMany { messages: Vec<u64> },
-    }
-);
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum InboundRequest {
+    Read {},
+    Broadcast { message: u64 },
+    BroadcastMany { messages: Vec<u64> },
+}
 
-define_msg_kind!(
-    #[derive(Debug, Serialize)]
-    enum OutboundResponse<'a> {
-        ReadOk { messages: &'a FxIndexSet<u64> },
-        BroadcastOk {},
-        BroadcastManyOk {},
-    }
-);
+#[allow(clippy::enum_variant_names)]
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum OutboundResponse<'a> {
+    ReadOk { messages: &'a FxIndexSet<u64> },
+    BroadcastOk {},
+    BroadcastManyOk {},
+}
 
-define_msg_kind!(
-    inbound,
-    #[derive(Debug, Serialize)]
-    enum OutboundRequest<'a> {
-        BroadcastMany { messages: &'a IndexSetSlice<u64> },
-    }
-);
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum OutboundRequest<'a> {
+    BroadcastMany { messages: &'a IndexSetSlice<u64> },
+}
 
-define_msg_kind!(
-    #[derive(Debug, Serialize, Deserialize)]
-    enum InboundResponse {
-        BroadcastManyOk {},
-    }
-);
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum InboundResponse {
+    BroadcastManyOk {},
+}

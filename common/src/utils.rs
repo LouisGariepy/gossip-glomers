@@ -1,7 +1,5 @@
 use std::sync::{Mutex, MutexGuard};
 
-use serde::{Deserialize, Serialize};
-
 /// A trait to allow mapping whole tuples.
 pub trait TupleMap {
     /// This function maps the tuple to a new value.
@@ -30,10 +28,6 @@ impl<T> PushGetIndex<T> for Vec<T> {
         index
     }
 }
-
-/// A ZST type that cannot be constructed.
-#[derive(Debug, Serialize, Deserialize)]
-pub enum Never {}
 
 /// A mutex wrapper that is never poisoned.
 #[derive(Debug, Default)]

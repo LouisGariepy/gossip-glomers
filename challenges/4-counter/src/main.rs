@@ -1,85 +1,89 @@
 use std::{future::ready, sync::Arc, time::UNIX_EPOCH};
 
-use common::{
-    define_msg_kind, respond, rpc, KvRequest, KvResponse, MaelstromErrorCode, Message, NodeBuilder,
-    Request, Response, ServiceId,
-};
 use futures::{stream::FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 
-type Node = common::Node<
-    tokio::sync::Mutex<()>,
+use common::{
+    id::ServiceId,
+    message::{KvRequest, KvResponse, MaelstromError, Message, Request},
+    node::{self, respond, rpc, NodeBuilder, NodeTrait},
+};
+
+type Node = node::Node<
     InboundRequest,
     OutboundResponse,
     KvRequest<u64, u64>,
     KvResponse<u64>,
+    tokio::sync::Mutex<()>,
 >;
 
 #[tokio::main]
 async fn main() {
-    NodeBuilder::init()
-        .with_state(|_, _| tokio::sync::Mutex::new(()))
-        .build()
-        .run(request_handler);
+    let builder = NodeBuilder::init().with_state(|_, _| tokio::sync::Mutex::new(()));
+
+    Node::build(builder).run(request_handler);
 }
 
 async fn request_handler(node: Arc<Node>, request: Message<Request<InboundRequest>>) {
     match request.body.kind {
         InboundRequest::Add { delta } => {
-            // Lock the state mutex to prevent multiple threads from interacting with the
-            // K-V store at the same time. This prevents data races where multiple threads
-            // try to write at the same time.
-            //
-            // For example, thread A reads the value, then, right after, thread B reads and writes the value.
-            // The value that thread A subsequently will write is incorrect since it relies on the old
-            // value, not the one that was recently written by thread B.
-            let guard = node.state.lock();
+            {
+                // Lock the state mutex to prevent multiple threads from interacting with the
+                // K-V store at the same time. This prevents data races where multiple threads
+                // try to write at the same time.
+                //
+                // For example, thread A reads the value, then, right after, thread B reads and writes the value.
+                // The value that thread A subsequently will write is incorrect since it relies on a stale
+                // value, not the one that was recently written by thread B.
+                let _guard = node.state.lock();
 
-            // Send the RPC request to read the value of the key associated with
-            // this node
-            let read_response = rpc!(
-                node,
-                ServiceId::SeqKv,
-                KvRequest::Read {
-                    key: node.node_id.into()
-                }
-            )
-            .await
-            .expect("RPC request did not timeout");
+                // Send the RPC request to read the value of the key associated with
+                // this node
+                let read_response = rpc!(
+                    node,
+                    ServiceId::SeqKv,
+                    KvRequest::Read {
+                        key: node.id.into()
+                    }
+                )
+                .await
+                .expect("RPC request did not timeout");
 
-            // If the key-value store responds with an OK, then we add the delta
-            // to the read value.
-            //
-            // If it responds with a `KeyDoesNotExist` error, then the value to write
-            // is simply the delta itself.
-            let value_to_write = match read_response.body.kind {
-                KvResponse::ReadOk { value } => value + delta,
-                KvResponse::Error { code } if code == MaelstromErrorCode::KeyDoesNotExist => delta,
-                _ => panic!("received unexpected response from key-value store"),
-            };
+                // If the key-value store responds with an OK, then we add the delta
+                // to the read value.
+                //
+                // If it responds with a `KeyDoesNotExist` error, then the value to write
+                // is simply the delta itself.
+                let value_to_write = match read_response.body.kind {
+                    KvResponse::ReadOk { value } => value + delta,
+                    KvResponse::Error {
+                        code: MaelstromError::KeyDoesNotExist,
+                    } => delta,
+                    _ => panic!(
+                        "expected a response to read operation, got `{:?}` instead",
+                        read_response.body.kind
+                    ),
+                };
 
-            // Send the RPC request to write the new value into the entry associated
-            // with this node.
-            let write_response = rpc!(
-                node,
-                ServiceId::SeqKv,
-                KvRequest::Write {
-                    key: node.node_id.into(),
-                    value: value_to_write
-                }
-            )
-            .await
-            .expect("RPC request did not timeout");
+                // Send the RPC request to write the new value into the entry associated
+                // with this node.
+                let write_response = rpc!(
+                    node,
+                    ServiceId::SeqKv,
+                    KvRequest::Write {
+                        key: node.id.into(),
+                        value: value_to_write
+                    }
+                )
+                .await
+                .expect("RPC request did not timeout");
 
-            // Assert the write operation was successful
-            assert!(
-                matches!(write_response.body.kind, KvResponse::WriteOk {}),
-                "expected an OK response to write operation"
-            );
-
-            // Now that we're done interacting with the key-value store, we
-            // can drop the lock to let other threads make progress.
-            drop(guard);
+                // Assert the write operation was successful
+                assert!(
+                    matches!(write_response.body.kind, KvResponse::WriteOk {}),
+                    "expected an OK response to write operation"
+                );
+            }
 
             // Send OK to the client.
             respond!(node, request, OutboundResponse::AddOk {});
@@ -114,7 +118,7 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
 
             // Get the value of all the nodes' entries.
             let counter = node
-                .node_ids
+                .network
                 .iter()
                 // Spawn read tasks
                 .map(|node_id| {
@@ -141,8 +145,13 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
                 // Map responses to values
                 .map(|response| match response.body.kind {
                     KvResponse::ReadOk { value } => value,
-                    KvResponse::Error { code } if code == MaelstromErrorCode::KeyDoesNotExist => 0,
-                    _ => panic!("expected an OK response to read operation"),
+                    KvResponse::Error {
+                        code: MaelstromError::KeyDoesNotExist,
+                    } => 0,
+                    _ => panic!(
+                        "expected a response to read operation, got `{:?}` instead",
+                        response.body.kind
+                    ),
                 })
                 // Sum all the values to get the whole counter's value.
                 // If a node's entry doesn't exist yet, it doesn't contribute
@@ -155,18 +164,18 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
     }
 }
 
-define_msg_kind!(
-    #[derive(Debug, Serialize, Deserialize)]
-    pub enum InboundRequest {
-        Add { delta: u64 },
-        Read {},
-    }
-);
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum InboundRequest {
+    Add { delta: u64 },
+    Read {},
+}
 
-define_msg_kind!(
-    #[derive(Debug, Deserialize, Serialize)]
-    pub enum OutboundResponse {
-        AddOk {},
-        ReadOk { value: u64 },
-    }
-);
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum OutboundResponse {
+    AddOk {},
+    ReadOk { value: u64 },
+}

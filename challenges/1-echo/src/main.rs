@@ -1,16 +1,12 @@
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
 
-use common::{respond, Message, NodeBuilder, Response};
-
-type Node = common::SimpleNode<(), InboundRequest, OutboundResponse>;
+use common::node::{respond, NodeBuilder, NodeTrait, SimpleNode};
 
 #[tokio::main]
 async fn main() {
-    NodeBuilder::init()
-        .build_simple()
-        .run(|node: Arc<Node>, request| async move {
+    let builder = NodeBuilder::init();
+    SimpleNode::<InboundRequest, OutboundResponse>::build(builder).run(
+        |node, request| async move {
             // Send echo back as response
             respond!(
                 node,
@@ -19,7 +15,8 @@ async fn main() {
                     echo: request.body.kind.echo(),
                 }
             );
-        });
+        },
+    );
 }
 
 #[derive(Debug, Deserialize)]

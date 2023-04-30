@@ -1,41 +1,39 @@
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
 
 use common::{
-    define_msg_kind, respond, Message, MsgId, MsgIdGenerator, NodeBuilder, NodeId, Response,
+    id::{MsgId, MsgIdGenerator, NodeId},
+    node::{NodeBuilder, NodeTrait, SimpleNode},
+    respond,
 };
-
-type Node = common::SimpleNode<MsgIdGenerator, InboundRequest, OutboundResponse>;
 
 #[tokio::main]
 async fn main() {
-    NodeBuilder::init()
-        .with_state(|_, _| MsgIdGenerator::default())
-        .build_simple()
-        .run(|node: Arc<Node>, request| async move {
+    let builder = NodeBuilder::init().with_state(|_, _| MsgIdGenerator::default());
+    SimpleNode::<InboundRequest, OutboundResponse, _>::build(builder).run(
+        |node, request| async move {
             // Send a unique id made up of the node's id and
             // an atomically incremented msg id.
             respond!(
                 node,
                 request,
-                OutboundResponse::GenerateOk(GenerateOk {
-                    id: (node.node_id, node.state.next()),
-                })
+                OutboundResponse::GenerateOk {
+                    id: (node.id, node.state.next()),
+                }
             );
-        });
+        },
+    );
 }
 
-define_msg_kind!(
-    #[derive(Debug, Deserialize)]
-    enum InboundRequest {
-        Generate {},
-    }
-);
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum InboundRequest {
+    Generate {},
+}
 
-define_msg_kind!(
-    #[derive(Debug, Serialize)]
-    enum OutboundResponse {
-        GenerateOk { id: (NodeId, MsgId) },
-    }
-);
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum OutboundResponse {
+    GenerateOk { id: (NodeId, MsgId) },
+}
