@@ -152,6 +152,7 @@ pub enum TopologyRequest {
 
 impl TopologyRequest {
     /// Converts into the type containing the actual topology data.
+    #[must_use]
     pub fn topology(self) -> TopologyMap {
         match self {
             TopologyRequest::Topology { topology } => topology,

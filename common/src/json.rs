@@ -1,15 +1,8 @@
-use std::{cell::RefCell, marker::PhantomData};
+use std::{any::type_name, cell::RefCell, fmt::Debug};
 
 use serde::{Deserialize, Serialize};
-use serde_json::value::{to_raw_value, RawValue};
 
 use crate::message::Message;
-
-/// Marker type denoting a request that was serialized.
-pub struct JsonRequest;
-
-/// Marker type denoting a response that was serialized.
-pub struct JsonResponse;
 
 /// A strongly-typed JSON type.
 ///
@@ -17,12 +10,12 @@ pub struct JsonResponse;
 /// serialized values. This prevents accidentally sending serialized
 /// messages that are not supported by the nodes.
 #[derive(Debug)]
-pub struct Json<T>(String, PhantomData<T>);
+pub struct Json(String);
 
 impl<Body: Serialize> Message<Body> {
     /// Crate-private utility to serialize a message to [`Json`].
-    pub(crate) fn into_json<T>(self) -> Json<T> {
-        Json(serde_json::to_string(&self).unwrap(), PhantomData)
+    pub(crate) fn into_json(self) -> Json {
+        Json(serde_json::to_string(&self).unwrap())
     }
 }
 
@@ -33,7 +26,7 @@ impl<'de, Body: Deserialize<'de>> Message<Body> {
     }
 }
 
-impl<T> Json<T> {
+impl Json {
     /// Crate-private utility to obtain a string
     /// slice reference out of a [`Json`] struct
     pub(crate) fn as_str(&self) -> &str {
@@ -41,15 +34,22 @@ impl<T> Json<T> {
     }
 }
 
-/// A trait for iterators that can be serialized.
+/// A wrapper for iterators that can be serialized as a sequence of values.
 ///
 /// Serializing is usually understood as a process without side-effects.
 /// To serialize an iterator, one must introduce side-effects to advance
-/// the iterator. This requires using interior mutability to deal with
+/// the iterator. This wrapper uses interior mutability to deal with
 /// [`serde`]'s API.
-struct SerIterSeq<I>(RefCell<I>);
+pub struct SerIterSeq<'a, Item: Serialize>(RefCell<Box<dyn Iterator<Item = Item> + 'a>>);
 
-impl<Item: Serialize, Iter: Iterator<Item = Item>> Serialize for SerIterSeq<Iter> {
+impl<'a, Item: Serialize> SerIterSeq<'a, Item> {
+    /// Creates a new instance out of an iterator.
+    pub fn new(iter: impl Iterator<Item = Item> + 'a) -> Self {
+        Self(RefCell::new(Box::new(iter)))
+    }
+}
+
+impl<'a, Item: Serialize> Serialize for SerIterSeq<'a, Item> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -58,27 +58,47 @@ impl<Item: Serialize, Iter: Iterator<Item = Item>> Serialize for SerIterSeq<Iter
     }
 }
 
-/// Typed wrapper around a [`RawValue`] used to represent an iterator,
-/// serializable as a sequence. This is useful because iterator
-/// types are not always nameable and therefore can cause proliferation
-/// of generics or the need for dynamic dispatch.
-#[derive(Debug)]
-pub struct SerIterSeqJson<Item>(Box<RawValue>, PhantomData<Item>);
-
-impl<Item> Serialize for SerIterSeqJson<Item> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        self.0.serialize(serializer)
+impl<'a, Item: Serialize> Debug for SerIterSeq<'a, Item> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SerIterMap<{}>", type_name::<Item>())
     }
 }
 
-struct SerIterMap<I>(RefCell<I>);
+impl<'a, Item: Serialize, I: Iterator<Item = Item> + 'a> From<I> for SerIterSeq<'a, Item> {
+    fn from(value: I) -> Self {
+        Self::new(value)
+    }
+}
 
-impl<Key: Serialize, Value: Serialize, Iter: Iterator<Item = (Key, Value)>> Serialize
-    for SerIterMap<Iter>
-{
+/// A wrapper for iterators that can be serialized as a key-value map.
+///
+/// Serializing is usually understood as a process without side-effects.
+/// To serialize an iterator, one must introduce side-effects to advance
+/// the iterator. This wrapper uses interior mutability to deal with
+/// [`serde`]'s API.
+pub struct SerIterMap<'a, Key: Serialize, Value: Serialize>(
+    RefCell<Box<dyn Iterator<Item = (Key, Value)> + 'a>>,
+);
+
+impl<'a, Key: Serialize, Value: Serialize> SerIterMap<'a, Key, Value> {
+    /// Creates a new instance out of an iterator.
+    pub fn new(iter: impl Iterator<Item = (Key, Value)> + 'a) -> Self {
+        Self(RefCell::new(Box::new(iter)))
+    }
+}
+
+impl<'a, Key: Serialize, Value: Serialize> Debug for SerIterMap<'a, Key, Value> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SerIterMap<{},{}>",
+            type_name::<Key>(),
+            type_name::<Value>()
+        )
+    }
+}
+
+impl<'a, Key: Serialize, Value: Serialize> Serialize for SerIterMap<'a, Key, Value> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -87,74 +107,10 @@ impl<Key: Serialize, Value: Serialize, Iter: Iterator<Item = (Key, Value)>> Seri
     }
 }
 
-/// Typed wrapper around a [`RawValue`] used to represent an iterator
-/// of (key, value) pairs, serializable as a map. This is useful because iterator
-/// types are not always nameable and therefore can cause proliferation
-/// of generics or the need for dynamic dispatch.
-#[derive(Debug)]
-pub struct SerIterMapJson<Key, Value>(Box<RawValue>, PhantomData<(Key, Value)>);
-
-impl<Key, Value> Serialize for SerIterMapJson<Key, Value> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        self.0.serialize(serializer)
-    }
-}
-
-/// An extension trait for iterators that can be serialized as sequences.
-pub trait SerializeIteratorSeq {
-    /// The type of item that the iterator yields.
-    type Item;
-
-    /// Converts the iterator into a serde-compatible opaque wrapper.
-    /// This wrapper will serialize as a sequence.
-    fn to_json_seq(self) -> SerIterSeqJson<Self::Item>;
-}
-
-impl<I, Item: Serialize> SerializeIteratorSeq for I
-where
-    I: Iterator<Item = Item>,
+impl<'a, Key: Serialize, Value: Serialize, I: Iterator<Item = (Key, Value)> + 'a> From<I>
+    for SerIterMap<'a, Key, Value>
 {
-    type Item = Item;
-
-    fn to_json_seq(self) -> SerIterSeqJson<Self::Item> {
-        SerIterSeqJson(
-            to_raw_value(&SerIterSeq(RefCell::new(self))).unwrap(),
-            PhantomData,
-        )
-    }
-}
-
-/// An extension trait for iterators of pairs that can be serialized as maps.
-/// Pairs must be in the form of a `(key, value)` tuple.
-pub trait SerializeIteratorMap {
-    /// The type of the keys that the iterator yields.
-    /// Keys must are the first element of the item tuple.
-    type Key;
-
-    /// The type of the values that the iterator yields.
-    /// Values must are the second element of the item tuple.
-    type Value;
-
-    /// Converts the iterator into a serde-compatible opaque wrapper.
-    /// This wrapper will serialize as a map.
-    fn to_json_map(self) -> SerIterMapJson<Self::Key, Self::Value>;
-}
-
-impl<I, Key: Serialize, Value: Serialize> SerializeIteratorMap for I
-where
-    I: Iterator<Item = (Key, Value)>,
-{
-    type Key = Key;
-
-    type Value = Value;
-
-    fn to_json_map(self) -> SerIterMapJson<Self::Key, Self::Value> {
-        SerIterMapJson(
-            to_raw_value(&SerIterMap(RefCell::new(self))).unwrap(),
-            PhantomData,
-        )
+    fn from(value: I) -> Self {
+        Self::new(value)
     }
 }

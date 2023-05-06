@@ -1,21 +1,17 @@
 use std::{sync::Arc, time::Duration};
 
-use serde::{Deserialize, Serialize};
+use messages::{InboundRequest, InboundResponse, OutboundRequest, OutboundResponse};
 
 use common::{
     id::NodeId,
     message::{Message, Request, Response, TopologyRequest, TopologyResponse},
-    node::{self, respond, rpc, NodeBuilder, NodeChannel, NodeTrait},
-    FxHashMap, FxIndexSet, HealthyMutex, IndexSetSlice, TupleMap,
+    node::{self, respond, rpc, NodeBuilder, NodeBuilderData, NodeChannel, NodeTrait},
+    FxHashMap, FxIndexSet, HealthyMutex, TupleMap,
 };
 
-type Node = node::Node<
-    InboundRequest,
-    OutboundResponse<'static>,
-    OutboundRequest<'static>,
-    InboundResponse,
-    NodeState,
->;
+mod messages;
+
+type Node = node::Node<InboundRequest, InboundResponse, NodeState>;
 
 /// Interval between healing broadcasts
 const HEALING_INTERVAL: Duration = Duration::from_millis(1000);
@@ -44,7 +40,7 @@ async fn main() {
     node.run(request_handler);
 }
 
-fn initialize_node(id: NodeId, channel: &mut NodeChannel) -> NodeState {
+fn initialize_node(builder_data: &NodeBuilderData, channel: &mut NodeChannel) -> NodeState {
     // Receive and respond to initial topology message
     let topology_request = channel.receive_msg::<TopologyRequest>();
     let topology_response = Message {
@@ -60,7 +56,7 @@ fn initialize_node(id: NodeId, channel: &mut NodeChannel) -> NodeState {
     // Obtain node neighbours from topology
     let mut topology = topology_request.body.kind.topology();
     let neighbours = topology
-        .remove(&id)
+        .remove(&builder_data.id)
         .expect("the topology should include this node's neighbours");
 
     // Create empty list for failed broadcasts
@@ -230,39 +226,4 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
             respond!(node, request, OutboundResponse::BroadcastManyOk {});
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
-enum InboundRequest {
-    Read {},
-    Broadcast { message: u64 },
-    BroadcastMany { messages: FxIndexSet<u64> },
-}
-
-#[allow(clippy::enum_variant_names)]
-#[derive(Debug, Serialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
-enum OutboundResponse<'a> {
-    ReadOk { messages: &'a FxIndexSet<u64> },
-    BroadcastOk {},
-    BroadcastManyOk {},
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
-enum OutboundRequest<'a> {
-    Broadcast { message: u64 },
-    BroadcastMany { messages: &'a IndexSetSlice<u64> },
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
-enum InboundResponse {
-    BroadcastOk {},
-    BroadcastManyOk {},
 }

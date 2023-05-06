@@ -1,4 +1,4 @@
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// A trait to allow mapping whole tuples.
 pub trait TupleMap {
@@ -29,7 +29,7 @@ impl<T> PushGetIndex<T> for Vec<T> {
     }
 }
 
-/// A mutex wrapper that is never poisoned.
+/// A [`Mutex`] wrapper that is never poisoned.
 #[derive(Debug, Default)]
 pub struct HealthyMutex<T>(Mutex<T>);
 
@@ -42,8 +42,35 @@ impl<T> HealthyMutex<T> {
         self.0.lock().unwrap()
     }
 
-    /// Creates a new mutex protecting a value.
+    /// Creates a new mutex guarding a value.
     pub fn new(value: T) -> Self {
-        HealthyMutex(Mutex::new(value))
+        Self(Mutex::new(value))
+    }
+}
+
+/// A mutex wrapper that is never poisoned.
+#[derive(Debug, Default)]
+pub struct HealthyRwLock<T>(RwLock<T>);
+
+impl<T> HealthyRwLock<T> {
+    /// Locks the rw-lock to acquire a read guard.
+    ///
+    /// # Panics
+    /// This function panics if the lock was poisoned.
+    pub fn read(&self) -> RwLockReadGuard<T> {
+        self.0.read().unwrap()
+    }
+
+    /// Locks the rw-lock to acquire a write guard.
+    ///
+    /// # Panics
+    /// This function panics if the lock was poisoned.
+    pub fn write(&self) -> RwLockWriteGuard<T> {
+        self.0.write().unwrap()
+    }
+
+    /// Creates a new rw-lock guarding a value.
+    pub fn new(value: T) -> Self {
+        Self(RwLock::new(value))
     }
 }

@@ -33,6 +33,7 @@ enum Challenge {
     Counter,
     KafkaA,
     KafkaB,
+    KafkaC,
 }
 
 impl Challenge {
@@ -48,6 +49,7 @@ impl Challenge {
             Challenge::Counter => "counter",
             Challenge::KafkaA => "kafka-a",
             Challenge::KafkaB => "kafka-b",
+            Challenge::KafkaC => "kafka-c",
         }
     }
 }
@@ -194,7 +196,7 @@ fn main() -> anyhow::Result<()> {
             .args(["--time-limit", "20"])
             .args(["--rate", "1000"])
             .args(["--concurrency", "2n"]),
-        Challenge::KafkaB => command
+        Challenge::KafkaB | Challenge::KafkaC => command
             .arg("test")
             .args(["-w", "kafka"])
             .args(["--bin", &binary_path.to_string_lossy()])

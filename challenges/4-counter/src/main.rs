@@ -1,21 +1,19 @@
 use std::{future::ready, sync::Arc, time::UNIX_EPOCH};
 
 use futures::{stream::FuturesUnordered, StreamExt};
-use serde::{Deserialize, Serialize};
+use messages::{InboundRequest, OutboundResponse};
+use tokio::sync::Mutex as TokioMutex;
 
 use common::{
     id::ServiceId,
-    message::{KvRequest, KvResponse, MaelstromError, Message, Request},
+    message::{KvResponse, MaelstromError, Message, Request},
     node::{self, respond, rpc, NodeBuilder, NodeTrait},
 };
 
-type Node = node::Node<
-    InboundRequest,
-    OutboundResponse,
-    KvRequest<u64, u64>,
-    KvResponse<u64>,
-    tokio::sync::Mutex<()>,
->;
+mod messages;
+
+type Node = node::Node<InboundRequest, KvResponse<u64>, TokioMutex<()>>;
+type KvRequest = common::message::KvRequest<u64, u64>;
 
 #[tokio::main]
 async fn main() {
@@ -47,7 +45,7 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
                     }
                 )
                 .await
-                .expect("RPC request did not timeout");
+                .expect("RPC request should not timeout");
 
                 // If the key-value store responds with an OK, then we add the delta
                 // to the read value.
@@ -60,7 +58,7 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
                         code: MaelstromError::KeyDoesNotExist,
                     } => delta,
                     _ => panic!(
-                        "expected a response to read operation, got `{:?}` instead",
+                        "expected `ReadOk`, got `{:?}` instead",
                         read_response.body.kind
                     ),
                 };
@@ -76,12 +74,13 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
                     }
                 )
                 .await
-                .expect("RPC request did not timeout");
+                .expect("RPC request should not timeout");
 
                 // Assert the write operation was successful
                 assert!(
                     matches!(write_response.body.kind, KvResponse::WriteOk {}),
-                    "expected an OK response to write operation"
+                    "expected a `WriteOk` response, got {:?} instead",
+                    write_response.body.kind,
                 );
             }
 
@@ -108,12 +107,13 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
                 }
             )
             .await
-            .expect("RPC request did not timeout");
+            .expect("RPC request should not timeout");
 
             // Assert the write operation was successful
             assert!(
                 matches!(write_response.body.kind, KvResponse::WriteOk {}),
-                "expected an OK response to write operation"
+                "expected a `WriteOk` response, got {:?} instead",
+                write_response.body.kind,
             );
 
             // Get the value of all the nodes' entries.
@@ -133,25 +133,19 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
                             }
                         )
                         .await
+                        .expect("RPC request did not time out")
                     })
                 })
                 .collect::<FuturesUnordered<_>>()
                 // Handle result
-                .map(|response| {
-                    response
-                        .expect("successfully joined the read task")
-                        .expect("expected an OK response to read operation")
-                })
+                .map(|response| response.expect("task should be able to be joined"))
                 // Map responses to values
                 .map(|response| match response.body.kind {
                     KvResponse::ReadOk { value } => value,
                     KvResponse::Error {
                         code: MaelstromError::KeyDoesNotExist,
                     } => 0,
-                    _ => panic!(
-                        "expected a response to read operation, got `{:?}` instead",
-                        response.body.kind
-                    ),
+                    _ => panic!("expected `ReadOk`, got `{:?}` instead", response.body.kind),
                 })
                 // Sum all the values to get the whole counter's value.
                 // If a node's entry doesn't exist yet, it doesn't contribute
@@ -162,20 +156,4 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
             respond!(node, request, OutboundResponse::ReadOk { value: counter });
         }
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
-pub enum InboundRequest {
-    Add { delta: u64 },
-    Read {},
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
-pub enum OutboundResponse {
-    AddOk {},
-    ReadOk { value: u64 },
 }

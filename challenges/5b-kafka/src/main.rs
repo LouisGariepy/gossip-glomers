@@ -1,19 +1,21 @@
 use std::sync::Arc;
 
 use futures::{stream::FuturesUnordered, StreamExt};
-use serde::{Deserialize, Serialize};
+use messages::{InboundRequest, OutboundResponse};
+use serde::Serialize;
 
 use common::{
     id::{ServiceId, SiteId},
-    json::{SerIterMapJson, SerializeIteratorMap},
-    message::{KvRequest, KvResponse, MaelstromError, Message, Request},
+    message::{KvResponse, MaelstromError, Message, Request},
     node::{self, respond, rpc, NodeBuilder, NodeTrait},
     FxHashMap, HealthyMutex,
 };
 
+mod messages;
+
 #[derive(Default)]
 struct NodeState {
-    logs: HealthyMutex<FxHashMap<String, usize>>,
+    log_commits: HealthyMutex<FxHashMap<String, usize>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -28,13 +30,8 @@ enum Key<'a> {
     MsgKey(&'a str, usize),
 }
 
-type Node = node::Node<
-    InboundRequest,
-    OutboundResponse,
-    KvRequest<Key<'static>, u64>,
-    KvResponse<u64>,
-    NodeState,
->;
+type Node = node::Node<InboundRequest, KvResponse<u64>, NodeState>;
+type KvRequest<'a> = common::message::KvRequest<Key<'a>, u64>;
 
 #[tokio::main]
 async fn main() {
@@ -48,7 +45,6 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
             // Loop until an available offset is reserved.
             let offset = loop {
                 if let Some(offset) = try_reserve_offset(&node, &key).await {
-                    eprintln!("Found offset available {offset} for log {key}");
                     break offset;
                 }
             };
@@ -63,13 +59,13 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
                 }
             )
             .await
-            .unwrap();
+            .expect("RPC request should not timeout");
 
             // Assert that the response is OK
             assert!(
                 matches!(write_response.body.kind, KvResponse::WriteOk {}),
-                "expected a response to cas operation, got `{:?}` instead",
-                write_response.body.kind
+                "expected a `WriteOk` response, got {:?} instead",
+                write_response.body.kind,
             );
 
             respond!(node, request, OutboundResponse::SendOk { offset });
@@ -93,7 +89,7 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
                                     }
                                 )
                                 .await
-                                .unwrap();
+                                .expect("RPC request did not time out");
 
                                 // Add the message to our message list.
                                 // If the given offset does not contain a message, it
@@ -104,7 +100,7 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
                                         code: MaelstromError::KeyDoesNotExist,
                                     } => break,
                                     _ => panic!(
-                                        "expected a response to read operation, got `{:?}` instead",
+                                        "expected `ReadOk`, got `{:?}` instead",
                                         read_response.body.kind
                                     ),
                                 }
@@ -117,14 +113,14 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
                     })
                 })
                 .collect::<FuturesUnordered<_>>()
-                .map(|future| future.unwrap())
+                .map(|future| future.expect("task should be able to be joined"))
                 .collect::<FxHashMap<String, Vec<(usize, u64)>>>()
                 .await;
             respond!(node, request, OutboundResponse::PollOk { msgs });
         }
         InboundRequest::CommitOffsets { offsets } => {
             {
-                let mut logs_guard = node.state.logs.lock();
+                let mut logs_guard = node.state.log_commits.lock();
                 // Set the commited offset for all the given logs.
                 for (key, offset) in offsets {
                     *logs_guard.entry(key).or_insert(offset) = offset;
@@ -133,14 +129,15 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
             respond!(node, request, OutboundResponse::CommitOffsetsOk {});
         }
         InboundRequest::ListCommittedOffsets { keys } => {
-            let offsets = {
-                let logs_guard = node.state.logs.lock();
-                // Get the commited offset of all the given keys that exist on this node.
-                keys.into_iter()
-                    .filter_map(|key| logs_guard.get(&key).map(|commited| (key, *commited)))
-                    .to_json_map()
-            };
+            let logs_guard = node.state.log_commits.lock();
+            // Get the commited offset of all the given keys that exist on this node.
+            let offsets = keys
+                .into_iter()
+                .filter_map(|key| logs_guard.get(&key).map(|commited| (key, *commited)))
+                .into();
+
             respond!(
+                [logs_guard],
                 node,
                 request,
                 OutboundResponse::ListCommittedOffsetsOk { offsets }
@@ -159,7 +156,7 @@ async fn try_reserve_offset(node: &Node, key: &str) -> Option<usize> {
         }
     )
     .await
-    .unwrap();
+    .expect("RPC request should not time out");
 
     let offset = match read_response.body.kind {
         // If the log entry exists, we get the offset value.
@@ -170,7 +167,7 @@ async fn try_reserve_offset(node: &Node, key: &str) -> Option<usize> {
             code: MaelstromError::KeyDoesNotExist,
         } => 0,
         _ => panic!(
-            "expected a response to read operation, got `{:?}` instead",
+            "expected `ReadOk`, got `{:?}` instead",
             read_response.body.kind
         ),
     };
@@ -188,7 +185,7 @@ async fn try_reserve_offset(node: &Node, key: &str) -> Option<usize> {
         }
     )
     .await
-    .unwrap();
+    .expect("RPC request should not time out");
 
     match cas_response.body.kind {
         // If the log's next available offset was incremented, then an available offset
@@ -201,34 +198,8 @@ async fn try_reserve_offset(node: &Node, key: &str) -> Option<usize> {
             code: MaelstromError::PreconditionFailed,
         } => None,
         _ => panic!(
-            "expected a response to cas operation, got `{:?}` instead",
+            "expected `CasOk` or `MaelstromError::PreconditionFailed`, got `{:?}` instead",
             cas_response.body.kind
         ),
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
-pub enum InboundRequest {
-    Send { key: String, msg: u64 },
-    Poll { offsets: FxHashMap<String, usize> },
-    CommitOffsets { offsets: FxHashMap<String, usize> },
-    ListCommittedOffsets { keys: Vec<String> },
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
-pub enum OutboundResponse {
-    SendOk {
-        offset: usize,
-    },
-    PollOk {
-        msgs: FxHashMap<String, Vec<(usize, u64)>>,
-    },
-    CommitOffsetsOk {},
-    ListCommittedOffsetsOk {
-        offsets: SerIterMapJson<String, usize>,
-    },
 }

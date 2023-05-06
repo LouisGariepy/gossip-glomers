@@ -31,7 +31,7 @@ pub mod node;
 pub use indexmap::{map::Slice as IndexMapSlice, set::Slice as IndexSetSlice};
 pub use rustc_hash::{FxHashMap, FxHashSet};
 
-pub use utils::{HealthyMutex, PushGetIndex, TupleMap};
+pub use utils::{HealthyMutex, HealthyRwLock, PushGetIndex, TupleMap};
 
 /// A fast hashset that preserves insertion order.
 pub type FxIndexSet<T> = IndexSet<T, BuildHasherDefault<FxHasher>>;

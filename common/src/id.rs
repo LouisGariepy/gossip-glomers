@@ -30,7 +30,7 @@ impl From<ClientId> for u64 {
 
 /// A type representing the ID of a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(u64);
+pub struct NodeId(pub u64);
 
 impl From<NodeId> for u64 {
     fn from(value: NodeId) -> Self {

@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     future::Future,
     io::{stdin, stdout, Stdin, Stdout, Write},
     marker::PhantomData,
@@ -12,7 +13,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     id::{MsgId, MsgIdGenerator, NodeId},
-    json::{Json, JsonRequest, JsonResponse},
+    json::Json,
     message::{InitRequest, InitResponse, Message, MessageType, Request, Response},
     HealthyMutex,
 };
@@ -21,18 +22,18 @@ use crate::{
 type RpcWaker<IRes> = oneshot::Sender<Message<Response<IRes>>>;
 
 /// Type for the function that handles a [`Node`]'s inbound requests.
-type InboundRequestHandler<IReq, ORes, OReq, IRes, State, F> =
-    fn(Arc<Node<IReq, ORes, OReq, IRes, State>>, Message<Request<IReq>>) -> F;
+type InboundRequestHandler<IReq, IRes, State, F> =
+    fn(Arc<Node<IReq, IRes, State>>, Message<Request<IReq>>) -> F;
 
 /// Type for the function that handles a [`SimpleNode`]'s inbound requests.
-type SimpleInboundRequestHandler<IReq, ORes, State, F> =
-    fn(Arc<SimpleNode<IReq, ORes, State>>, Message<Request<IReq>>) -> F;
+type SimpleInboundRequestHandler<IReq, State, F> =
+    fn(Arc<SimpleNode<IReq, State>>, Message<Request<IReq>>) -> F;
 
 /// A node abstraction. The main main item provided by this module. Nodes can hold
 /// state, receive and send both requests and responses.
 ///
 /// In contrast to [`SimpleNode`]s, nodes can send RPC requests.
-pub struct Node<IReq, ORes, OReq, IRes, State = ()> {
+pub struct Node<IReq, IRes, State = ()> {
     /// This node's ID.
     pub id: NodeId,
     /// The list of all participating node IDs.
@@ -48,32 +49,25 @@ pub struct Node<IReq, ORes, OReq, IRes, State = ()> {
     stdout: Stdout,
     /// Zero-sized marker to enforce the correct inbound request type.
     phantom_ireq: PhantomData<fn(IReq)>,
-    /// Zero-sized marker to enforce the correct outbound response type.
-    phantom_ores: PhantomData<fn() -> ORes>,
-    /// Zero-sized marker to enforce the correct outbound request type.
-    phantom_oreq: PhantomData<fn() -> OReq>,
 }
 
-impl<IReq, ORes, OReq, IRes, State> Node<IReq, ORes, OReq, IRes, State>
+impl<IReq, IRes, State> Node<IReq, IRes, State>
 where
     IReq: DeserializeOwned,
-    ORes: Serialize,
-    OReq: Serialize,
-    IRes: std::fmt::Debug + DeserializeOwned + Send + Sync + 'static,
-    State: Send + Sync + 'static,
+    IRes: Debug + DeserializeOwned,
 {
     /// Serializes a request message to JSON and returns it along with it's message id.
-    pub fn serialize_response(&self, res: Message<Response<ORes>>) -> Json<JsonResponse> {
+    pub fn serialize_response<T: Serialize>(&self, res: Message<Response<T>>) -> Json {
         res.into_json()
     }
 
     /// Sends a response message.
-    pub fn send_response(&self, res: &Json<JsonResponse>) {
+    pub fn send_response(&self, res: &Json) {
         writeln!(self.stdout.lock(), "{}", res.as_str()).unwrap();
     }
 
     /// Serializes a request message to JSON and returns it along with it's message id.
-    pub fn serialize_request(&self, req: Message<Request<OReq>>) -> Json<JsonRequest> {
+    pub fn serialize_request<T: Serialize>(&self, req: Message<Request<T>>) -> Json {
         req.into_json()
     }
 
@@ -85,11 +79,7 @@ where
     ///
     /// # Panics
     /// Panics if the sender half of the RPC waker has been dropped before sending anything.
-    pub async fn rpc(
-        &self,
-        msg_id: MsgId,
-        ser_req: Json<JsonRequest>,
-    ) -> Option<Message<Response<IRes>>> {
+    pub async fn rpc(&self, msg_id: MsgId, ser_req: Json) -> Option<Message<Response<IRes>>> {
         let (sender, receiver) = oneshot::channel();
         // Insert a new waker
         self.rpc_wakers.lock().insert(msg_id, sender);
@@ -116,10 +106,8 @@ where
     /// # Panics
     /// Panics when receiving a RPC response if the receiver half of the waker has already
     /// been dropped.
-    pub fn run<F>(
-        self: Arc<Self>,
-        request_handler: InboundRequestHandler<IReq, ORes, OReq, IRes, State, F>,
-    ) where
+    pub fn run<F>(self: Arc<Self>, request_handler: InboundRequestHandler<IReq, IRes, State, F>)
+    where
         F: Future<Output = ()> + Send + 'static,
     {
         // Read lines from STDIN
@@ -167,7 +155,7 @@ where
 /// state, receive requests and send responses.
 ///
 /// In contrast to [`Node`]s, simple nodes cannot perform RPC requests.
-pub struct SimpleNode<IReq, ORes, State = ()> {
+pub struct SimpleNode<IReq, State = ()> {
     /// This node's ID.
     pub id: NodeId,
     /// The list of all participating node IDs.
@@ -178,32 +166,26 @@ pub struct SimpleNode<IReq, ORes, State = ()> {
     stdout: Stdout,
     /// Zero-sized marker to enforce the correct inbound request type.
     phantom_ireq: PhantomData<fn(IReq)>,
-    /// Zero-sized marker to enforce the correct outbound response type.
-    phantom_ores: PhantomData<fn() -> ORes>,
 }
 
-impl<IReq, ORes, State> SimpleNode<IReq, ORes, State>
+impl<IReq, State> SimpleNode<IReq, State>
 where
     IReq: DeserializeOwned,
-    ORes: Serialize,
-    State: Send + Sync + 'static,
 {
     /// Serializes a request message to JSON and returns it along with it's message id.
-    pub fn serialize_response(&self, res: Message<Response<ORes>>) -> Json<JsonResponse> {
+    pub fn serialize_response<T: Serialize>(&self, res: Message<Response<T>>) -> Json {
         res.into_json()
     }
 
     /// Sends a response message.
-    pub fn send_response(&self, res: &Json<JsonResponse>) {
+    pub fn send_response(&self, res: &Json) {
         writeln!(self.stdout.lock(), "{}", res.as_str()).unwrap();
     }
 
     /// Inbound message handler. It deserializes inbound request messages and dispatches
     /// them to the request handler on a separate async task.
-    pub fn run<F>(
-        self: Arc<Self>,
-        request_handler: SimpleInboundRequestHandler<IReq, ORes, State, F>,
-    ) where
+    pub fn run<F>(self: Arc<Self>, request_handler: SimpleInboundRequestHandler<IReq, State, F>)
+    where
         F: Future<Output = ()> + Send + 'static,
     {
         // Read lines from STDIN
@@ -231,7 +213,7 @@ pub struct NodeChannel {
 impl NodeChannel {
     /// Serializes a message to JSON and writes on a single line over STDOUT
     pub fn send_msg<Body: Serialize>(&self, msg: Message<Response<Body>>) {
-        writeln!(self.stdout.lock(), "{}", msg.into_json::<()>().as_str()).unwrap();
+        writeln!(self.stdout.lock(), "{}", msg.into_json().as_str()).unwrap();
     }
 
     /// Reads a single line from STDIN and deserializes it from JSON into a message.
@@ -250,17 +232,25 @@ impl NodeChannel {
 /// is responsible of handling all initial message exchanges and to
 /// set the node's state.
 pub struct NodeBuilder<State> {
+    /// Data that was received by the builder during
+    /// the initial message exchange.
+    pub initial_data: NodeBuilderData,
     /// A communication channel to STDIN/STDOUT held by
     /// this builder to send and receive initial messages.
     channel: NodeChannel,
-    /// The [`Node`] ID received from the
-    /// [`crate::message::InitRequest`] message.
-    id: NodeId,
-    /// The list of all participating [`Node`] IDs
-    /// received from the [`crate::message::InitRequest`] message.
-    network: Vec<NodeId>,
     /// A user-defined state.
     state: State,
+}
+
+/// Data that was received by the builder during
+/// the initial message exchange.
+pub struct NodeBuilderData {
+    /// The [`Node`] ID received from the
+    /// [`crate::message::InitRequest`] message.
+    pub id: NodeId,
+    /// The list of all participating [`Node`] IDs
+    /// received from the [`crate::message::InitRequest`] message.
+    pub network: Vec<NodeId>,
 }
 
 impl NodeBuilder<()> {
@@ -289,10 +279,12 @@ impl NodeBuilder<()> {
         // Create the builder from the information in the init request.
         let init = init_request.body.kind.into_inner();
         Self {
-            id: init.node_id,
-            network: init.node_ids,
             state: (),
             channel,
+            initial_data: NodeBuilderData {
+                id: init.node_id,
+                network: init.node_ids,
+            },
         }
     }
 
@@ -302,16 +294,12 @@ impl NodeBuilder<()> {
     #[must_use]
     pub fn with_state<State>(
         mut self,
-        init: fn(node_id: NodeId, &mut NodeChannel) -> State,
-    ) -> NodeBuilder<State>
-    where
-        State: Send + Sync + 'static,
-    {
+        init: fn(initial_data: &NodeBuilderData, &mut NodeChannel) -> State,
+    ) -> NodeBuilder<State> {
         NodeBuilder {
-            network: self.network,
-            state: init(self.id, &mut self.channel),
-            id: self.id,
+            state: init(&self.initial_data, &mut self.channel),
             channel: self.channel,
+            initial_data: self.initial_data,
         }
     }
 }
@@ -323,40 +311,52 @@ pub trait NodeTrait<State> {
     fn build(builder: NodeBuilder<State>) -> Arc<Self>;
 }
 
-impl<IReq, ORes, State> NodeTrait<State> for SimpleNode<IReq, ORes, State> {
+impl<IReq, State> NodeTrait<State> for SimpleNode<IReq, State> {
     fn build(builder: NodeBuilder<State>) -> Arc<Self> {
         Arc::new(Self {
-            id: builder.id,
-            network: builder.network,
+            id: builder.initial_data.id,
+            network: builder.initial_data.network,
             state: builder.state,
             stdout: builder.channel.stdout,
             phantom_ireq: PhantomData,
-            phantom_ores: PhantomData,
         })
     }
 }
 
-impl<IReq, ORes, OReq, IRes, State> NodeTrait<State> for Node<IReq, ORes, OReq, IRes, State> {
+impl<IReq, IRes, State> NodeTrait<State> for Node<IReq, IRes, State> {
     fn build(builder: NodeBuilder<State>) -> Arc<Self> {
         Arc::new(Self {
-            id: builder.id,
-            network: builder.network,
+            id: builder.initial_data.id,
+            network: builder.initial_data.network,
             msg_id_gen: MsgIdGenerator::default(),
             state: builder.state,
             stdout: builder.channel.stdout,
             rpc_wakers: HealthyMutex::default(),
             phantom_ireq: PhantomData,
-            phantom_ores: PhantomData,
-            phantom_oreq: PhantomData,
         })
     }
 }
 
-/// Convenience macro to write RPC calls.
+/// Convenience macro to send RPC requests.
+/// This macro takes four parameters:
+/// 1. (Optional): A bracket-delimited list of identifiers that should be dropped after
+/// the request has been serialized. This is useful for example to drop mutex locks as
+/// soon as possible.
+/// 2. The node's identifier.
+/// 3. The destination of this request. This can be anything that implements <code>[Into]&lt;[`SiteId`](crate::id::SiteId)&gt;</code>
+/// 4. The request kind.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! rpc {
-    ($node:ident, $dest:expr, $kind:expr $(,)?) => {{
+    (
+        $(
+            [$($drop_ident:ident),*],
+        )?
+        $node:ident,
+        $dest:expr,
+        $kind:expr
+        $(,)?
+    ) => {{
         let msg_id = $node.msg_id_gen.next();
         let msg_ser = $node.serialize_request(common::message::Message {
             src: $node.id.into(),
@@ -366,15 +366,36 @@ macro_rules! rpc {
                 kind: $kind,
             },
         });
+        $(
+            // Variables to drop
+            $(
+                drop( $drop_ident );
+            )*
+        )?
         $node.rpc(msg_id, msg_ser)
     }};
 }
 
-/// Convenience macro to write responses to inbound requests.
+/// Convenience macro to send responses to inbound requests.
+/// This macro takes four parameters:
+/// 1. (Optional): A bracket-delimited list of identifiers that should be dropped after
+/// the response has been serialized. This is useful for example to drop mutex locks as
+/// soon as possible.
+/// 2. The node's identifier.
+/// 3. The identifier of the request to which this response it targeted.
+/// 4. The response kind.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! respond {
-    ($node:ident, $request:expr, $kind:expr $(,)?) => {{
+    (
+        $(
+            [$($drop_ident:ident),*],
+        )?
+        $node:ident,
+        $request:ident,
+        $kind:expr
+        $(,)?
+    ) => {{
         let msg_ser = $node.serialize_response(common::message::Message {
             src: $request.dest,
             dest: $request.src,
@@ -383,6 +404,12 @@ macro_rules! respond {
                 kind: $kind,
             },
         });
+        $(
+            // Variables to drop
+            $(
+                drop( $drop_ident );
+            )*
+        )?
         $node.send_response(&msg_ser);
     }};
 }

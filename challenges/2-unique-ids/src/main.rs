@@ -1,39 +1,25 @@
-use serde::{Deserialize, Serialize};
+use messages::{InboundRequest, OutboundResponse};
 
 use common::{
-    id::{MsgId, MsgIdGenerator, NodeId},
+    id::MsgIdGenerator,
     node::{NodeBuilder, NodeTrait, SimpleNode},
     respond,
 };
 
+mod messages;
+
 #[tokio::main]
 async fn main() {
     let builder = NodeBuilder::init().with_state(|_, _| MsgIdGenerator::default());
-    SimpleNode::<InboundRequest, OutboundResponse, _>::build(builder).run(
-        |node, request| async move {
-            // Send a unique id made up of the node's id and
-            // an atomically incremented msg id.
-            respond!(
-                node,
-                request,
-                OutboundResponse::GenerateOk {
-                    id: (node.id, node.state.next()),
-                }
-            );
-        },
-    );
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
-enum InboundRequest {
-    Generate {},
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
-enum OutboundResponse {
-    GenerateOk { id: (NodeId, MsgId) },
+    SimpleNode::<InboundRequest, _>::build(builder).run(|node, request| async move {
+        // Send a unique id made up of the node's id and
+        // an atomically incremented msg id.
+        respond!(
+            node,
+            request,
+            OutboundResponse::GenerateOk {
+                id: (node.id, node.state.next()),
+            }
+        );
+    });
 }

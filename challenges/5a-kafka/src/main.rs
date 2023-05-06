@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use messages::{InboundRequest, OutboundResponse};
 
 use common::{
     message::{Message, Request},
     node::{self, respond, NodeBuilder, NodeTrait},
     FxHashMap, HealthyMutex, PushGetIndex,
 };
+
+mod messages;
 
 #[derive(Default)]
 struct Log {
@@ -19,7 +21,7 @@ struct NodeState {
     logs: HealthyMutex<FxHashMap<String, Log>>,
 }
 
-type Node = node::SimpleNode<InboundRequest, OutboundResponse, NodeState>;
+type Node = node::SimpleNode<InboundRequest, NodeState>;
 
 #[tokio::main]
 async fn main() {
@@ -43,27 +45,27 @@ fn request_handler(node: Arc<Node>, request: Message<Request<InboundRequest>>) {
             respond!(node, request, OutboundResponse::SendOk { offset });
         }
         InboundRequest::Poll { offsets } => {
-            let poll_ok = {
-                let logs_guard = node.state.logs.lock();
-                offsets
-                    .into_iter()
-                    // Filter to keep only log entries that exist
-                    .filter_map(|(key, offset)| {
-                        logs_guard.get(&key).map(|log| {
-                            // Get all the message from the given offset onwards.
-                            let log_messages = log
-                                .messages
-                                .iter()
-                                .copied()
-                                .enumerate()
-                                .skip(offset)
-                                .collect();
-                            (key, log_messages)
-                        })
+            let logs_guard = node.state.logs.lock();
+
+            let poll_ok = offsets
+                .into_iter()
+                // Filter to keep only log entries that exist
+                .filter_map(|(key, offset)| {
+                    logs_guard.get(&key).map(|log| {
+                        // Get all the message from the given offset onwards.
+                        let log_messages =
+                            log.messages.iter().copied().enumerate().skip(offset).into();
+                        (key, log_messages)
                     })
-                    .collect()
-            };
-            respond!(node, request, OutboundResponse::PollOk { msgs: poll_ok });
+                })
+                .into();
+
+            respond!(
+                [logs_guard],
+                node,
+                request,
+                OutboundResponse::PollOk { msgs: poll_ok }
+            );
         }
         InboundRequest::CommitOffsets { offsets } => {
             {
@@ -76,44 +78,20 @@ fn request_handler(node: Arc<Node>, request: Message<Request<InboundRequest>>) {
             respond!(node, request, OutboundResponse::CommitOffsetsOk {});
         }
         InboundRequest::ListCommittedOffsets { keys } => {
-            let offsets = {
-                let logs_guard = node.state.logs.lock();
-                // Get the commited offset of all the given keys that exist on this node.
-                keys.into_iter()
-                    .filter_map(|key| logs_guard.get(&key).map(|log| (key, log.commited)))
-                    .collect()
-            };
+            let logs_guard = node.state.logs.lock();
+
+            // Get the commited offset of all the given keys that exist on this node.
+            let offsets = keys
+                .into_iter()
+                .filter_map(|key| logs_guard.get(&key).map(|log| (key, log.commited)))
+                .into();
+
             respond!(
+                [logs_guard],
                 node,
                 request,
-                OutboundResponse::ListCommittedOffsetsOk { offsets }
+                OutboundResponse::ListCommittedOffsetsOk { offsets },
             );
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
-pub enum InboundRequest {
-    Send { key: String, msg: u64 },
-    Poll { offsets: FxHashMap<String, usize> },
-    CommitOffsets { offsets: FxHashMap<String, usize> },
-    ListCommittedOffsets { keys: Vec<String> },
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
-pub enum OutboundResponse {
-    SendOk {
-        offset: usize,
-    },
-    PollOk {
-        msgs: FxHashMap<String, Vec<(usize, u64)>>,
-    },
-    CommitOffsetsOk {},
-    ListCommittedOffsetsOk {
-        offsets: FxHashMap<String, usize>,
-    },
 }
