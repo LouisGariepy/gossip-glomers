@@ -9,12 +9,23 @@ pub struct MsgId(pub(crate) u64);
 
 /// Type that atomically generates sequential IDs.
 #[derive(Default)]
-pub struct MsgIdGenerator(AtomicU64);
+pub struct AtomicIdGenerator(AtomicU64);
+
+impl AtomicIdGenerator {
+    /// Generates the next ID.
+    pub fn next(&self) -> u64 {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Type that atomically generates sequential message IDs.
+#[derive(Default)]
+pub struct MsgIdGenerator(AtomicIdGenerator);
 
 impl MsgIdGenerator {
     /// Generates the next ID.
     pub fn next(&self) -> MsgId {
-        MsgId(self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+        MsgId(self.0.next())
     }
 }
 
