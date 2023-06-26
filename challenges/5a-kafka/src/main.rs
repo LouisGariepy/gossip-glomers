@@ -1,14 +1,14 @@
-use std::sync::Arc;
+mod messages;
 
-use messages::{InboundRequest, OutboundResponse};
+use std::sync::Arc;
 
 use common::{
     message::{Message, Request},
-    node::{self, respond, NodeBuilder, NodeTrait},
+    node::{self, respond, BuildNode, NodeBuilder},
     FxHashMap, HealthyMutex, PushGetIndex,
 };
 
-mod messages;
+use messages::{InboundRequest, OutboundResponse};
 
 #[derive(Default)]
 struct Log {
@@ -25,8 +25,10 @@ type Node = node::SimpleNode<InboundRequest, NodeState>;
 
 #[tokio::main]
 async fn main() {
-    let builder = NodeBuilder::init().with_state(|_, _| NodeState::default());
-    Node::build(builder).run(|node, request| async { request_handler(node, request) });
+    NodeBuilder::init()
+        .with_default_state()
+        .build::<Node>()
+        .run(|node, request| async { request_handler(node, request) });
 }
 
 fn request_handler(node: Arc<Node>, request: Message<Request<InboundRequest>>) {

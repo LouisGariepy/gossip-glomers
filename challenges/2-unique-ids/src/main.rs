@@ -1,25 +1,27 @@
-use messages::{InboundRequest, OutboundResponse};
+mod messages;
 
 use common::{
     id::MsgIdGenerator,
-    node::{NodeBuilder, NodeTrait, SimpleNode},
+    node::{BuildNode, NodeBuilder, SimpleNode},
     respond,
 };
 
-mod messages;
+use messages::{InboundRequest, OutboundResponse};
 
 #[tokio::main]
 async fn main() {
-    let builder = NodeBuilder::init().with_state(|_, _| MsgIdGenerator::default());
-    SimpleNode::<InboundRequest, _>::build(builder).run(|node, request| async move {
-        // Send a unique id made up of the node's id and
-        // an atomically incremented msg id.
-        respond!(
-            node,
-            request,
-            OutboundResponse::GenerateOk {
-                id: (node.id, node.state.next()),
-            }
-        );
-    });
+    NodeBuilder::init()
+        .with_default_state::<MsgIdGenerator>()
+        .build::<SimpleNode<InboundRequest, _>>()
+        .run(|node, request| async move {
+            // Send a unique id made up of the node's id and
+            // an atomically incremented msg id.
+            respond!(
+                node,
+                request,
+                OutboundResponse::GenerateOk {
+                    id: (node.id, node.state.next()),
+                }
+            );
+        });
 }

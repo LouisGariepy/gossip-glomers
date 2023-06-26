@@ -15,6 +15,7 @@ use crate::{
     id::{MsgId, MsgIdGenerator, NodeId},
     json::Json,
     message::{InitRequest, InitResponse, Message, MessageType, Request, Response},
+    utils::SameType,
     HealthyMutex,
 };
 
@@ -172,7 +173,7 @@ impl<IReq, State> SimpleNode<IReq, State>
 where
     IReq: DeserializeOwned,
 {
-    /// Serializes a request message to JSON and returns it along with it's message id.
+    /// Serializes a request message to JSON.
     pub fn serialize_response<T: Serialize>(&self, res: Message<Response<T>>) -> Json {
         res.into_json()
     }
@@ -302,36 +303,48 @@ impl NodeBuilder<()> {
             initial_data: self.initial_data,
         }
     }
+
+    /// Sets the [`NodeBuilder`]'s state. This state will be inherited by the [`Node`]
+    /// this builder will create. This method can be used to handle initial message exchanges
+    /// that are required to set the state.
+    #[must_use]
+    pub fn with_default_state<State: Default>(self) -> NodeBuilder<State> {
+        self.with_state(|_, _| State::default())
+    }
 }
 
-/// A trait representing some common operations available to nodes.
-pub trait NodeTrait<State> {
+/// A trait used to build nodes.
+pub trait BuildNode<Node> {
     /// Builds an instance out of a [`NodeBuilder`].
     #[must_use]
-    fn build(builder: NodeBuilder<State>) -> Arc<Self>;
+    fn build<N>(self) -> Arc<N::As>
+    where
+        N: SameType<As = Node>;
 }
 
-impl<IReq, State> NodeTrait<State> for SimpleNode<IReq, State> {
-    fn build(builder: NodeBuilder<State>) -> Arc<Self> {
-        Arc::new(Self {
-            id: builder.initial_data.id,
-            network: builder.initial_data.network,
-            state: builder.state,
-            stdout: builder.channel.stdout,
+/// [`NodeBuilder`]s can build [`Node`]s.
+impl<IReq, IRes, State> BuildNode<Node<IReq, IRes, State>> for NodeBuilder<State> {
+    fn build<N>(self) -> Arc<Node<IReq, IRes, State>> {
+        Arc::new(Node {
+            id: self.initial_data.id,
+            network: self.initial_data.network,
+            msg_id_gen: MsgIdGenerator::default(),
+            state: self.state,
+            stdout: self.channel.stdout,
+            rpc_wakers: HealthyMutex::default(),
             phantom_ireq: PhantomData,
         })
     }
 }
 
-impl<IReq, IRes, State> NodeTrait<State> for Node<IReq, IRes, State> {
-    fn build(builder: NodeBuilder<State>) -> Arc<Self> {
-        Arc::new(Self {
-            id: builder.initial_data.id,
-            network: builder.initial_data.network,
-            msg_id_gen: MsgIdGenerator::default(),
-            state: builder.state,
-            stdout: builder.channel.stdout,
-            rpc_wakers: HealthyMutex::default(),
+/// [`NodeBuilder`]s can build [`SimpleNode`]s.
+impl<IReq, State> BuildNode<SimpleNode<IReq, State>> for NodeBuilder<State> {
+    fn build<N>(self) -> Arc<SimpleNode<IReq, State>> {
+        Arc::new(SimpleNode {
+            id: self.initial_data.id,
+            network: self.initial_data.network,
+            state: self.state,
+            stdout: self.channel.stdout,
             phantom_ireq: PhantomData,
         })
     }

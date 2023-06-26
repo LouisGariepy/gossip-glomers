@@ -1,3 +1,5 @@
+mod messages;
+
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -6,16 +8,14 @@ use std::{
     time::Duration,
 };
 
-use messages::{InboundRequest, InboundResponse, OutboundRequest, OutboundResponse};
-
 use common::{
     id::NodeId,
     message::{Message, Request, Response, TopologyRequest, TopologyResponse},
-    node::{self, respond, rpc, NodeBuilder, NodeBuilderData, NodeChannel, NodeTrait},
+    node::{self, respond, rpc, BuildNode, NodeBuilder, NodeBuilderData, NodeChannel},
     FxHashMap, FxIndexSet, HealthyMutex,
 };
 
-mod messages;
+use messages::{InboundRequest, InboundResponse, OutboundRequest, OutboundResponse};
 
 type Node = node::Node<InboundRequest, InboundResponse, NodeState>;
 
@@ -45,8 +45,9 @@ struct NodeState {
 #[tokio::main]
 async fn main() {
     // Build node
-    let builder = NodeBuilder::init().with_state(initialize_node);
-    let node = Node::build(builder);
+    let node = NodeBuilder::init()
+        .with_state(initialize_node)
+        .build::<Node>();
     // Spawn background healing task
     healing_task(Arc::clone(&node));
     // Spawn background batch broadcasting task

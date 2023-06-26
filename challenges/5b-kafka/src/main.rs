@@ -1,17 +1,18 @@
+mod messages;
+
 use std::sync::Arc;
 
 use futures::{stream::FuturesUnordered, StreamExt};
-use messages::{InboundRequest, OutboundResponse};
 use serde::Serialize;
 
 use common::{
     id::{ServiceId, SiteId},
     message::{KvResponse, MaelstromError, Message, Request},
-    node::{self, respond, rpc, NodeBuilder, NodeTrait},
+    node::{self, respond, rpc, BuildNode, NodeBuilder},
     FxHashMap, HealthyMutex,
 };
 
-mod messages;
+use messages::{InboundRequest, OutboundResponse};
 
 #[derive(Default)]
 struct NodeState {
@@ -35,8 +36,10 @@ type KvRequest<'a> = common::message::KvRequest<Key<'a>, u64>;
 
 #[tokio::main]
 async fn main() {
-    let builder = NodeBuilder::init().with_state(|_, _| NodeState::default());
-    Node::build(builder).run(request_handler);
+    NodeBuilder::init()
+        .with_default_state()
+        .build::<Node>()
+        .run(request_handler);
 }
 
 async fn request_handler(node: Arc<Node>, request: Message<Request<InboundRequest>>) {

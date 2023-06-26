@@ -34,17 +34,17 @@ impl<T> PushGetIndex<T> for Vec<T> {
 pub struct HealthyMutex<T>(Mutex<T>);
 
 impl<T> HealthyMutex<T> {
+    /// Creates a new mutex guarding a value.
+    pub fn new(value: T) -> Self {
+        Self(Mutex::new(value))
+    }
+
     /// Locks the mutex to acquire the guard.
     ///
     /// # Panics
     /// This function panics if the mutex was poisoned.
     pub fn lock(&self) -> MutexGuard<T> {
         self.0.lock().unwrap()
-    }
-
-    /// Creates a new mutex guarding a value.
-    pub fn new(value: T) -> Self {
-        Self(Mutex::new(value))
     }
 }
 
@@ -53,7 +53,12 @@ impl<T> HealthyMutex<T> {
 pub struct HealthyRwLock<T>(RwLock<T>);
 
 impl<T> HealthyRwLock<T> {
-    /// Locks the rw-lock to acquire a read guard.
+    /// Creates a new rw-lock guarding a value.
+    pub fn new(value: T) -> Self {
+        Self(RwLock::new(value))
+    }
+
+    /// Tries to locks the rw-lock to acquire a read guard.
     ///
     /// # Panics
     /// This function panics if the lock was poisoned.
@@ -68,9 +73,16 @@ impl<T> HealthyRwLock<T> {
     pub fn write(&self) -> RwLockWriteGuard<T> {
         self.0.write().unwrap()
     }
+}
 
-    /// Creates a new rw-lock guarding a value.
-    pub fn new(value: T) -> Self {
-        Self(RwLock::new(value))
-    }
+/// A utility trait that essentially allows us to link the type
+/// of two different generics into one.
+pub trait SameType {
+    /// Associated type that denotes which type the implementer is the same as.
+    type As: ?Sized;
+}
+
+/// The blanket implementation that makes [`SameType`] work out.
+impl<T: ?Sized> SameType for T {
+    type As = Self;
 }

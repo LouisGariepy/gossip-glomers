@@ -1,25 +1,27 @@
+mod messages;
+
 use std::{future::ready, sync::Arc, time::UNIX_EPOCH};
 
 use futures::{stream::FuturesUnordered, StreamExt};
-use messages::{InboundRequest, OutboundResponse};
 use tokio::sync::Mutex as TokioMutex;
 
 use common::{
     id::ServiceId,
     message::{KvResponse, MaelstromError, Message, Request},
-    node::{self, respond, rpc, NodeBuilder, NodeTrait},
+    node::{self, respond, rpc, BuildNode, NodeBuilder},
 };
 
-mod messages;
+use messages::{InboundRequest, OutboundResponse};
 
 type Node = node::Node<InboundRequest, KvResponse<u64>, TokioMutex<()>>;
 type KvRequest = common::message::KvRequest<u64, u64>;
 
 #[tokio::main]
 async fn main() {
-    let builder = NodeBuilder::init().with_state(|_, _| tokio::sync::Mutex::new(()));
-
-    Node::build(builder).run(request_handler);
+    NodeBuilder::init()
+        .with_default_state()
+        .build::<Node>()
+        .run(request_handler);
 }
 
 async fn request_handler(node: Arc<Node>, request: Message<Request<InboundRequest>>) {
