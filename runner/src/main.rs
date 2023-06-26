@@ -32,6 +32,8 @@ enum Challenge {
     },
     Counter,
     KafkaA,
+    KafkaB,
+    KafkaC,
 }
 
 impl Challenge {
@@ -46,13 +48,9 @@ impl Challenge {
             Challenge::BroadcastE { .. } => "broadcast-e",
             Challenge::Counter => "counter",
             Challenge::KafkaA => "kafka-a",
+            Challenge::KafkaB => "kafka-b",
+            Challenge::KafkaC => "kafka-c",
         }
-    }
-}
-
-impl std::fmt::Display for Topology {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self.as_str(), f)
     }
 }
 
@@ -79,18 +77,31 @@ impl Topology {
     }
 }
 
+impl std::fmt::Display for Topology {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.as_str(), f)
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let binary_name = cli.challenge.as_str();
 
-    Command::new("cargo")
+    let build_success = Command::new("cargo")
         .arg("build")
         .args(["-p", binary_name])
         .arg("--release")
         .spawn()
         .context("could not build challenges")?
         .wait()
-        .context("error while waiting on build process")?;
+        .context("error while waiting on build process")?
+        .success();
+
+    if !build_success {
+        return Err(anyhow!(
+            "Runner couldn't build the challenge binary due to the previous error(s)"
+        ));
+    }
 
     let binary_path = PathBuf::from("target/release")
         .join(binary_name)
@@ -171,7 +182,7 @@ fn main() -> anyhow::Result<()> {
         }
         Challenge::Counter => command
             .arg("test")
-            .args(["-w", "counter"])
+            .args(["-w", "g-counter"])
             .args(["--bin", &binary_path.to_string_lossy()])
             .args(["--node-count", "3"])
             .args(["--time-limit", "20"])
@@ -182,6 +193,14 @@ fn main() -> anyhow::Result<()> {
             .args(["-w", "kafka"])
             .args(["--bin", &binary_path.to_string_lossy()])
             .args(["--node-count", "1"])
+            .args(["--time-limit", "20"])
+            .args(["--rate", "1000"])
+            .args(["--concurrency", "2n"]),
+        Challenge::KafkaB | Challenge::KafkaC => command
+            .arg("test")
+            .args(["-w", "kafka"])
+            .args(["--bin", &binary_path.to_string_lossy()])
+            .args(["--node-count", "2"])
             .args(["--time-limit", "20"])
             .args(["--rate", "1000"])
             .args(["--concurrency", "2n"]),

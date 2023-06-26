@@ -2,6 +2,6 @@
 members = ["runner", "common", "challenges/*"]
 
 [workspace.dependencies]
-serde = { version = "1.0.156", features = ["derive"] }
-tokio = { version = "1.26.0", features = ["full"] }
+serde = { version = "1.0.164", features = ["derive"] }
+tokio = { version = "1.28.2", features = ["full"] }
 futures = "0.3.28"

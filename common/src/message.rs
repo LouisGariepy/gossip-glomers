@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::{
-    id::{MessageId, NodeId, SiteId},
+    id::{MsgId, NodeId, SiteId},
     TopologyMap,
 };
 
@@ -23,7 +23,7 @@ pub enum MessageType<RequestBody, ResponseBody> {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Request<Kind> {
     /// Requests must have a message ID.
-    pub msg_id: MessageId,
+    pub msg_id: MsgId,
     /// This field holds the data for the specific
     /// kind of request.
     #[serde(flatten)]
@@ -35,7 +35,7 @@ pub struct Request<Kind> {
 pub struct Response<Kind> {
     /// Responses must have an ID corresponding
     /// to a previously sent request.
-    pub in_reply_to: MessageId,
+    pub in_reply_to: MsgId,
     /// This field holds the data for the specific
     /// kind of response.
     #[serde(flatten)]
@@ -53,127 +53,10 @@ pub struct Message<Body> {
     pub body: Body,
 }
 
-/// A macro utility to define message kinds.
-#[macro_export]
-macro_rules! define_msg_kind {
-    (
-        $(#[doc = $enum_doc:expr])*
-        #[derive($($derive:path),*)]
-        $vis:vis enum $enum_ident:ident $(<$($generics:tt),*>)?  {
-            $(#[doc = $variant_doc:expr])*
-            $variant_ident:ident {
-                $(
-                    $(#[doc = $field_doc:expr])*
-                    $field_ident:ident : $field_ty:ty
-                ),+ $(,)?
-            } $(,)?
-        }
-    ) =>
-    {
-        $(#[doc = $enum_doc])*
-        #[derive($($derive),*)]
-        #[serde(tag = "type")]
-        #[serde(rename_all = "snake_case")]
-        $vis enum $enum_ident $(<$($generics),*>)? {
-            $(#[doc = $variant_doc])*
-            #[allow(missing_docs)]
-            $variant_ident($variant_ident $(<$($generics),*>)?),
-        }
-
-        impl $(<$($generics),*>)? $enum_ident $(<$($generics),*>)? {
-            #[doc = "Converts [`"]
-            #[doc = stringify!($enum_ident)]
-            #[doc = "`] into it's concrete struct type [`"]
-            #[doc = stringify!($variant_ident)]
-            #[doc = "`]."]
-            #[must_use]
-            $vis fn into_inner(self) -> $variant_ident $(<$($generics),*>)? {
-                match self {
-                    $enum_ident::$variant_ident(inner) => inner
-                }
-            }
-        }
-
-        #[doc = "Concrete data-holding struct for the [`"]
-        #[doc = stringify!($enum_ident)]
-        #[doc = "`] message kind"]
-        #[derive($($derive),*)]
-        $vis struct $variant_ident $(<$($generics),*>)? {
-            $(
-                $(#[doc = $field_doc])*
-                $vis $field_ident : $field_ty,
-            )+
-        }
-    };
-    (
-        inbound,
-        $(#[doc = $enum_doc:expr])*
-        #[derive($($derive:path),*)]
-        $vis:vis enum $enum_ident:ident $(<$($generics:tt),*>)?  {
-            $(#[doc = $variant_doc:expr])*
-            $variant_ident:ident {
-                $(
-                    $(#[doc = $field_doc:expr])*
-                    $field_ident:ident : $field_ty:ty
-                ),+ $(,)?
-            } $(,)?
-        }
-    ) => {
-        $(#[doc = $enum_doc])*
-        #[derive($($derive),*)]
-        #[serde(tag = "type")]
-        #[serde(rename_all = "snake_case")]
-        #[allow(clippy::enum_variant_names)]
-        $vis enum $enum_ident $(<$($generics),*>)?{
-            $(#[doc = $variant_doc])*
-            #[allow(missing_docs)]
-            $variant_ident {
-                $(
-                    $(#[doc = $field_doc])*
-                    $field_ident : $field_ty
-                ),*
-            }
-        }
-    };
-    (
-        $(#[doc = $enum_doc:expr])*
-        #[derive($($derive:path),*)]
-        $vis:vis enum $enum_ident:ident $(<$($generics:tt),*>)? {
-            $(
-                $(#[doc = $variant_doc:expr])*
-                $variant_ident:ident {
-                    $(
-                        $(#[doc = $field_doc:expr])*
-                        $field_ident:ident : $field_ty:ty
-                    ),* $(,)?
-                }
-            ),* $(,)?
-        }
-    ) => {
-        $(#[doc = $enum_doc])*
-        #[derive($($derive),*)]
-        #[serde(tag = "type")]
-        #[serde(rename_all = "snake_case")]
-        #[allow(clippy::enum_variant_names)]
-        $vis enum $enum_ident $(<$($generics),*>)?{
-            $(
-                $(#[doc = $variant_doc])*
-                #[allow(missing_docs)]
-                $variant_ident {
-                    $(
-                        $(#[doc = $field_doc])*
-                        $field_ident : $field_ty
-                    ),*
-                }
-            ),*
-        }
-    };
-}
-
 /// Specific error codes reserved by Maelstrom.
 #[derive(Debug, Serialize_repr, Deserialize_repr, PartialEq, Eq)]
 #[repr(u8)]
-pub enum MaelstromErrorCode {
+pub enum MaelstromError {
     /// Indicates that the requested operation could not be completed within a timeout.
     Timeout = 0,
     /// Thrown when a client sends an RPC request to a node which does not exist.
@@ -217,72 +100,128 @@ pub enum MaelstromErrorCode {
     TxnConflict = 30,
 }
 
-define_msg_kind!(
-    /// Initial request that Maelstrom sends
-    /// after node initialization.
-    #[derive(Debug, Deserialize)]
-    pub enum InitRequest {
-        Init {
-            /// The ID of the node.
-            node_id: NodeId,
-            /// The IDs of every node in the network.
-            node_ids: Vec<NodeId>,
-        },
-    }
-);
+/// Initial request that Maelstrom sends
+/// after node initialization.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum InitRequest {
+    Init(Init),
+}
 
-define_msg_kind!(
-    /// Response to [`InitRequest`].
-    #[derive(Debug, Serialize)]
-    pub enum InitResponse {
-        InitOk {},
-    }
-);
+/// Concrete data-holding struct for the [`InitRequest`] message kind.
+#[derive(Debug, Deserialize)]
+pub(crate) struct Init {
+    // The ID of the node.
+    pub(crate) node_id: NodeId,
+    // The IDs of every node in the network.
+    pub(crate) node_ids: Vec<NodeId>,
+}
 
-define_msg_kind!(
-    /// Initial topology request message with which
-    /// Maelstrom shares the network topology with
-    /// nodes.
-    #[derive(Debug, Deserialize)]
-    pub enum TopologyRequest {
-        Topology {
-            /// A map containing all node's neighbours.
-            topology: TopologyMap,
-        },
+impl InitRequest {
+    #[must_use]
+    pub(crate) fn into_inner(self) -> Init {
+        match self {
+            InitRequest::Init(inner) => inner,
+        }
     }
-);
+}
 
-define_msg_kind!(
-    /// Response to [`TopologyRequest`].
-    #[derive(Debug, Serialize)]
-    pub enum TopologyResponse {
-        TopologyOk {},
-    }
-);
+/// Response to [`InitRequest`].
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum InitResponse {
+    /// Response to [`InitRequest::Init`]
+    InitOk {},
+}
 
-define_msg_kind!(
-    /// A request that nodes send to interact with the key-value service.
-    #[derive(Debug, Serialize)]
-    pub enum KvRequest<K, V> {
-        /// Reads the value associated with the given key.
-        Read { key: K },
-        /// Overwrites the given value to the given key. Creates a new
-        /// entry if the the key doesn't already exists.
-        Write { key: K, value: V },
-        /// Atomically compare-and-sets the value of the given key key: if
-        /// the value of key is currently from, sets it to to. Returns error
-        /// 20 if the key doesn't exist, and 22 if the from value doesn't match.
-        Cas { key: K, from: V, to: V },
-    }
-);
+/// Initial topology request message with which
+/// Maelstrom shares the network topology with
+/// nodes.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum TopologyRequest {
+    /// A request that holds the topology sent by Maelstrom.
+    Topology {
+        /// A map containing all node's neighbours.
+        topology: TopologyMap,
+    },
+}
 
-define_msg_kind!(
-    /// Response to [`KvRequest`].
-    #[derive(Debug, Deserialize)]
-    pub enum KvResponse<V> {
-        ReadOk { value: V },
-        WriteOk {},
-        CasOk {},
-        Error { code: MaelstromErrorCode },
+impl TopologyRequest {
+    /// Converts into the type containing the actual topology data.
+    #[must_use]
+    pub fn topology(self) -> TopologyMap {
+        match self {
+            TopologyRequest::Topology { topology } => topology,
+        }
     }
-);
+}
+
+/// Response to [`TopologyRequest`].
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum TopologyResponse {
+    /// Response to [`TopologyRequest::Topology`].
+    TopologyOk {},
+}
+
+/// A request that nodes send to interact with the key-value service.
+#[doc = " A request that nodes send to interact with the key-value service."]
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum KvRequest<K, V> {
+    /// Reads the value associated with the given key.
+    Read {
+        /// The key to read.
+        key: K,
+    },
+    /// Overwrites the given value to the given key. Creates a new
+    /// entry if the the key doesn't already exists.
+    Write {
+        /// The key to write.
+        key: K,
+        /// The value to write at the corresponding key.
+        value: V,
+    },
+    /// Atomically compare-and-sets the value of the given key key: if
+    /// the value of key is currently from, sets it to to. Returns error
+    /// 20 if the key doesn't exist, and 22 if the from value doesn't match.
+    Cas {
+        /// The key to compare.
+        key: K,
+        /// The value to compare.
+        from: V,
+        /// The value to set if the comparison was successful.
+        to: V,
+        /// Causes the `cas` request to create missing keys, rather than
+        /// returning a [`MaelstromError::KeyDoesNotExist`] error.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        create_if_not_exists: bool,
+    },
+}
+
+/// Response to [`KvRequest`].
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum KvResponse<V> {
+    /// Response to [`KvRequest::Read`].
+    ReadOk {
+        /// The value that was read
+        value: V,
+    },
+    /// Response to [`KvRequest::Read`].
+    WriteOk {},
+    /// [`KvRequest::Read`]
+    CasOk {},
+    /// Signifies that a [`KvRequest`] resutled in an error.
+    Error {
+        /// The error returned by Maelstrom.
+        code: MaelstromError,
+    },
+}

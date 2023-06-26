@@ -1,11 +1,9 @@
 use std::{
+    fmt::Debug,
     future::Future,
     io::{stdin, stdout, Stdin, Stdout, Write},
     marker::PhantomData,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
+    sync::Arc,
     time::Duration,
 };
 
@@ -14,79 +12,78 @@ use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::oneshot;
 
 use crate::{
-    id::{MessageId, NodeId},
+    id::{MsgId, MsgIdGenerator, NodeId},
+    json::Json,
     message::{InitRequest, InitResponse, Message, MessageType, Request, Response},
-    Json,
+    utils::SameType,
+    HealthyMutex,
 };
 
 /// Type that allows RPC tasks to be awoken.
-pub type RpcCallback<IRes> = oneshot::Sender<Message<Response<IRes>>>;
+type RpcWaker<IRes> = oneshot::Sender<Message<Response<IRes>>>;
 
 /// Type for the function that handles a [`Node`]'s inbound requests.
-type InboundRequestHandler<State, IReq, ORes, OReq, IRes, F> =
-    fn(Arc<Node<State, IReq, ORes, OReq, IRes>>, Message<Request<IReq>>) -> F;
+type InboundRequestHandler<IReq, IRes, State, F> =
+    fn(Arc<Node<IReq, IRes, State>>, Message<Request<IReq>>) -> F;
+
+/// Type for the function that handles a [`SimpleNode`]'s inbound requests.
+type SimpleInboundRequestHandler<IReq, State, F> =
+    fn(Arc<SimpleNode<IReq, State>>, Message<Request<IReq>>) -> F;
 
 /// A node abstraction. The main main item provided by this module. Nodes can hold
-/// state, receive and send messages
-pub struct Node<State, IReq, ORes, OReq, IRes> {
-    /// This [`Node`]'s ID.
-    pub node_id: NodeId,
-    /// The list of all participating [`Node`] IDs.
-    pub node_ids: Vec<NodeId>,
-    /// This [`Node`]'s state.
+/// state, receive and send both requests and responses.
+///
+/// In contrast to [`SimpleNode`]s, nodes can send RPC requests.
+pub struct Node<IReq, IRes, State = ()> {
+    /// This node's ID.
+    pub id: NodeId,
+    /// The list of all participating node IDs.
+    pub network: Vec<NodeId>,
+    /// Atomic counter for message IDs.
+    pub msg_id_gen: MsgIdGenerator,
+    /// This node's state.
     pub state: State,
-    /// A map containing [`RpcCallback`]s, identified by the
-    /// [`MessageId`] of the corresponding RPC request.
-    pub rpc_callbacks: Mutex<FxHashMap<MessageId, RpcCallback<IRes>>>,
+    /// A map containing [`RpcWaker`]s, identified by the
+    /// [`MsgId`] of the corresponding RPC request.
+    rpc_wakers: HealthyMutex<FxHashMap<MsgId, RpcWaker<IRes>>>,
     /// Standard output. Allows nodes to send messages.
     stdout: Stdout,
-    /// Atomic counter for message IDs.
-    next_msg_id: AtomicU64,
-    /// Zero-sized marker used to make the generic bounds more ergonomic for users.
+    /// Zero-sized marker to enforce the correct inbound request type.
     phantom_ireq: PhantomData<fn(IReq)>,
-    /// Zero-sized marker to enforce the correct outbound response type.
-    phantom_ores: PhantomData<fn() -> ORes>,
-    /// Zero-sized marker to enforce the correct outbound request type.
-    phantom_oreq: PhantomData<fn() -> OReq>,
 }
 
-impl<State, IReq, ORes, OReq, IRes> Node<State, IReq, ORes, OReq, IRes>
+impl<IReq, IRes, State> Node<IReq, IRes, State>
 where
     IReq: DeserializeOwned,
-    ORes: Serialize,
-    OReq: Serialize,
-    IRes: std::fmt::Debug + DeserializeOwned + Send + Sync + 'static,
-    State: Send + Sync + 'static,
+    IRes: Debug + DeserializeOwned,
 {
-    /// Atomically increment the node's message counter and return previous value.
-    pub fn next_msg_id(&self) -> MessageId {
-        MessageId(self.next_msg_id.fetch_add(1, Ordering::SeqCst))
-    }
-
     /// Serializes a request message to JSON and returns it along with it's message id.
-    pub fn serialize_response(&self, req: Message<Response<ORes>>) -> Json {
-        req.into_json()
+    pub fn serialize_response<T: Serialize>(&self, res: Message<Response<T>>) -> Json {
+        res.into_json()
     }
 
     /// Sends a response message.
-    pub fn send_response(&self, res: Json) {
+    pub fn send_response(&self, res: &Json) {
         writeln!(self.stdout.lock(), "{}", res.as_str()).unwrap();
     }
 
     /// Serializes a request message to JSON and returns it along with it's message id.
-    pub fn serialize_request(&self, req: Message<Request<OReq>>) -> Json {
+    pub fn serialize_request<T: Serialize>(&self, req: Message<Request<T>>) -> Json {
         req.into_json()
     }
 
-    /// Performs a RPC call by sending the serialized request message and registering a callback.
+    /// Performs a RPC call by sending the serialized request message and registering a waker.
     /// When the node receives the corresponding response, it will send back the response
-    /// via the callback.
+    /// via the waker and resume the task that sent the request.
     ///
     /// If the RPC call times out, this function return `None`. Otherwise it returns the response.
-    pub async fn rpc(&self, msg_id: MessageId, ser_req: Json) -> Option<Message<Response<IRes>>> {
+    ///
+    /// # Panics
+    /// Panics if the sender half of the RPC waker has been dropped before sending anything.
+    pub async fn rpc(&self, msg_id: MsgId, ser_req: Json) -> Option<Message<Response<IRes>>> {
         let (sender, receiver) = oneshot::channel();
-        // Insert a new callback
-        self.rpc_callbacks.lock().unwrap().insert(msg_id, sender);
+        // Insert a new waker
+        self.rpc_wakers.lock().insert(msg_id, sender);
         // Send RPC request
         writeln!(self.stdout.lock(), "{}", ser_req.as_str()).unwrap();
         // Wait to receive response
@@ -96,8 +93,8 @@ where
             // Timeout
             Err(_) => None,
         };
-        // Remove callback and return result
-        self.rpc_callbacks.lock().unwrap().remove(&msg_id);
+        // Remove the corresponding waker and return the result
+        self.rpc_wakers.lock().remove(&msg_id);
         result
     }
 
@@ -105,17 +102,18 @@ where
     ///
     /// This function runs the provided request handler upon receiving a request.
     /// On the other hand, when receiving a response (to a previously made RPC request), it
-    /// wakes the RPC task by sending the response over the registered callback.
-    pub fn run<F>(
-        self: Arc<Self>,
-        request_handler: InboundRequestHandler<State, IReq, ORes, OReq, IRes, F>,
-    ) where
+    /// wakes the RPC task by sending the response over the registered waker.
+    ///
+    /// # Panics
+    /// Panics when receiving a RPC response if the receiver half of the waker has already
+    /// been dropped.
+    pub fn run<F>(self: Arc<Self>, request_handler: InboundRequestHandler<IReq, IRes, State, F>)
+    where
         F: Future<Output = ()> + Send + 'static,
     {
         // Read lines from STDIN
         let mut lines = stdin().lines();
         while let Some(Ok(line)) = lines.next() {
-            eprintln!("{line}");
             // Deserialize line into message
             let msg = Message::<MessageType<IReq, IRes>>::from_json_str(&line);
             // Check if message was a request or a response
@@ -133,18 +131,14 @@ where
                         )
                     });
                 }
-                // Response are sent to RPC tasks via a callback
+                // Response are sent to RPC tasks via a waker
                 MessageType::Response(response) => {
-                    // Get the callback corresponding to the RPC request's id
-                    let callback = self
-                        .rpc_callbacks
-                        .lock()
-                        .unwrap()
-                        .remove(&response.in_reply_to);
-                    // If this callback still exists (i.e. it hasn't timed
-                    // out yet), send the response message over the callback
-                    if let Some(callback) = callback {
-                        callback
+                    // Get the waker corresponding to the RPC request's id
+                    let waker = self.rpc_wakers.lock().remove(&response.in_reply_to);
+                    // If this waker still exists (i.e. it hasn't timed
+                    // out yet), send the response message over the waker
+                    if let Some(waker) = waker {
+                        waker
                             .send(Message {
                                 src: msg.src,
                                 dest: msg.dest,
@@ -154,6 +148,54 @@ where
                     }
                 }
             }
+        }
+    }
+}
+
+/// A simple node abstraction. The main main item provided by this module. Simple nodes can hold
+/// state, receive requests and send responses.
+///
+/// In contrast to [`Node`]s, simple nodes cannot perform RPC requests.
+pub struct SimpleNode<IReq, State = ()> {
+    /// This node's ID.
+    pub id: NodeId,
+    /// The list of all participating node IDs.
+    pub network: Vec<NodeId>,
+    /// This node's state.
+    pub state: State,
+    /// Standard output. Allows nodes to send messages.
+    stdout: Stdout,
+    /// Zero-sized marker to enforce the correct inbound request type.
+    phantom_ireq: PhantomData<fn(IReq)>,
+}
+
+impl<IReq, State> SimpleNode<IReq, State>
+where
+    IReq: DeserializeOwned,
+{
+    /// Serializes a request message to JSON.
+    pub fn serialize_response<T: Serialize>(&self, res: Message<Response<T>>) -> Json {
+        res.into_json()
+    }
+
+    /// Sends a response message.
+    pub fn send_response(&self, res: &Json) {
+        writeln!(self.stdout.lock(), "{}", res.as_str()).unwrap();
+    }
+
+    /// Inbound message handler. It deserializes inbound request messages and dispatches
+    /// them to the request handler on a separate async task.
+    pub fn run<F>(self: Arc<Self>, request_handler: SimpleInboundRequestHandler<IReq, State, F>)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        // Read lines from STDIN
+        let mut lines = stdin().lines();
+        while let Some(Ok(line)) = lines.next() {
+            // Deserialize line into message
+            let request = Message::<Request<IReq>>::from_json_str(&line);
+            // Request are handled by the request handler in a separate task
+            tokio::spawn(request_handler(Arc::clone(&self), request));
         }
     }
 }
@@ -176,6 +218,9 @@ impl NodeChannel {
     }
 
     /// Reads a single line from STDIN and deserializes it from JSON into a message.
+    ///
+    /// # Panics
+    /// Panics if unable to read a line from STDIN.
     pub fn receive_msg<Body: DeserializeOwned>(&mut self) -> Message<Request<Body>> {
         self.stdin.read_line(&mut self.buf).unwrap();
         let msg = Message::from_json_str(&self.buf);
@@ -188,21 +233,29 @@ impl NodeChannel {
 /// is responsible of handling all initial message exchanges and to
 /// set the node's state.
 pub struct NodeBuilder<State> {
+    /// Data that was received by the builder during
+    /// the initial message exchange.
+    pub initial_data: NodeBuilderData,
     /// A communication channel to STDIN/STDOUT held by
     /// this builder to send and receive initial messages.
     channel: NodeChannel,
-    /// The [`Node`] ID received from the
-    /// [`crate::message::InitRequest`] message.
-    node_id: NodeId,
-    /// The list of all participating [`Node`] IDs
-    /// received from the [`crate::message::InitRequest`] message.
-    node_ids: Vec<NodeId>,
     /// A user-defined state.
     state: State,
 }
 
+/// Data that was received by the builder during
+/// the initial message exchange.
+pub struct NodeBuilderData {
+    /// The [`Node`] ID received from the
+    /// [`crate::message::InitRequest`] message.
+    pub id: NodeId,
+    /// The list of all participating [`Node`] IDs
+    /// received from the [`crate::message::InitRequest`] message.
+    pub network: Vec<NodeId>,
+}
+
 impl NodeBuilder<()> {
-    /// Handles the [`crate::message::InitRequest`] message
+    /// Handles the initial Maelstrom message
     /// exchange and creates a new instance of [`NodeBuilder`].
     #[must_use]
     pub fn init() -> Self {
@@ -227,10 +280,12 @@ impl NodeBuilder<()> {
         // Create the builder from the information in the init request.
         let init = init_request.body.kind.into_inner();
         Self {
-            node_id: init.node_id,
-            node_ids: init.node_ids,
             state: (),
             channel,
+            initial_data: NodeBuilderData {
+                id: init.node_id,
+                network: init.node_ids,
+            },
         }
     }
 
@@ -240,68 +295,139 @@ impl NodeBuilder<()> {
     #[must_use]
     pub fn with_state<State>(
         mut self,
-        init: fn(node_id: NodeId, &mut NodeChannel) -> State,
-    ) -> NodeBuilder<State>
-    where
-        State: Send + Sync + 'static,
-    {
+        init: fn(initial_data: &NodeBuilderData, &mut NodeChannel) -> State,
+    ) -> NodeBuilder<State> {
         NodeBuilder {
-            node_ids: self.node_ids,
-            state: init(self.node_id, &mut self.channel),
-            node_id: self.node_id,
+            state: init(&self.initial_data, &mut self.channel),
             channel: self.channel,
+            initial_data: self.initial_data,
         }
+    }
+
+    /// Sets the [`NodeBuilder`]'s state. This state will be inherited by the [`Node`]
+    /// this builder will create. This method can be used to handle initial message exchanges
+    /// that are required to set the state.
+    #[must_use]
+    pub fn with_default_state<State: Default>(self) -> NodeBuilder<State> {
+        self.with_state(|_, _| State::default())
     }
 }
 
-impl<State> NodeBuilder<State> {
-    /// Consumes this builder and creates a [`Node`].
-    /// The [`Node`] will inherit this builder's state.
+/// A trait used to build nodes.
+pub trait BuildNode<Node> {
+    /// Builds an instance out of a [`NodeBuilder`].
     #[must_use]
-    pub fn build<IReq, ORes, OReq, IRes>(self) -> Arc<Node<State, IReq, ORes, OReq, IRes>> {
+    fn build<N>(self) -> Arc<N::As>
+    where
+        N: SameType<As = Node>;
+}
+
+/// [`NodeBuilder`]s can build [`Node`]s.
+impl<IReq, IRes, State> BuildNode<Node<IReq, IRes, State>> for NodeBuilder<State> {
+    fn build<N>(self) -> Arc<Node<IReq, IRes, State>> {
         Arc::new(Node {
-            node_id: self.node_id,
-            node_ids: self.node_ids,
+            id: self.initial_data.id,
+            network: self.initial_data.network,
+            msg_id_gen: MsgIdGenerator::default(),
             state: self.state,
             stdout: self.channel.stdout,
-            rpc_callbacks: Mutex::default(),
+            rpc_wakers: HealthyMutex::default(),
             phantom_ireq: PhantomData,
-            phantom_ores: PhantomData,
-            phantom_oreq: PhantomData,
-            next_msg_id: AtomicU64::default(),
         })
     }
 }
 
-/// Convenience macro to write RPC calls.
+/// [`NodeBuilder`]s can build [`SimpleNode`]s.
+impl<IReq, State> BuildNode<SimpleNode<IReq, State>> for NodeBuilder<State> {
+    fn build<N>(self) -> Arc<SimpleNode<IReq, State>> {
+        Arc::new(SimpleNode {
+            id: self.initial_data.id,
+            network: self.initial_data.network,
+            state: self.state,
+            stdout: self.channel.stdout,
+            phantom_ireq: PhantomData,
+        })
+    }
+}
+
+/// Convenience macro to send RPC requests.
+/// This macro takes four parameters:
+/// 1. (Optional): A bracket-delimited list of identifiers that should be dropped after
+/// the request has been serialized. This is useful for example to drop mutex locks as
+/// soon as possible.
+/// 2. The node's identifier.
+/// 3. The destination of this request. This can be anything that implements <code>[Into]&lt;[`SiteId`](crate::id::SiteId)&gt;</code>
+/// 4. The request kind.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! rpc {
-    ($node:ident, $dest:expr, $kind:expr $(,)?) => {{
-        let msg_id = $node.next_msg_id();
-        let msg_ser = $node.serialize_request(Message {
-            src: $node.node_id.into(),
+    (
+        $(
+            [$($drop_ident:ident),*],
+        )?
+        $node:ident,
+        $dest:expr,
+        $kind:expr
+        $(,)?
+    ) => {{
+        let msg_id = $node.msg_id_gen.next();
+        let msg_ser = $node.serialize_request(common::message::Message {
+            src: $node.id.into(),
             dest: $dest.into(),
-            body: Request {
+            body: common::message::Request {
                 msg_id,
                 kind: $kind,
             },
         });
+        $(
+            // Variables to drop
+            $(
+                drop( $drop_ident );
+            )*
+        )?
         $node.rpc(msg_id, msg_ser)
     }};
 }
 
-/// Convenience macro to write responses to inbound requests.
+/// Convenience macro to send responses to inbound requests.
+/// This macro takes four parameters:
+/// 1. (Optional): A bracket-delimited list of identifiers that should be dropped after
+/// the response has been serialized. This is useful for example to drop mutex locks as
+/// soon as possible.
+/// 2. The node's identifier.
+/// 3. The identifier of the request to which this response it targeted.
+/// 4. The response kind.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! respond {
-    ($node:ident, $request:expr, $kind:expr $(,)?) => {{
-        let msg_ser = $node.serialize_response(Message {
+    (
+        $(
+            [$($drop_ident:ident),*],
+        )?
+        $node:ident,
+        $request:ident,
+        $kind:expr
+        $(,)?
+    ) => {{
+        let msg_ser = $node.serialize_response(common::message::Message {
             src: $request.dest,
             dest: $request.src,
-            body: Response {
+            body: common::message::Response {
                 in_reply_to: $request.body.msg_id,
                 kind: $kind,
             },
         });
-        $node.send_response(msg_ser);
+        $(
+            // Variables to drop
+            $(
+                drop( $drop_ident );
+            )*
+        )?
+        $node.send_response(&msg_ser);
     }};
 }
+
+#[doc(inline)]
+pub use respond;
+#[doc(inline)]
+pub use rpc;

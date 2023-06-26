@@ -1,19 +1,17 @@
+mod messages;
+
 use std::{sync::Arc, time::Duration};
 
 use common::{
-    define_msg_kind, respond, rpc, FxHashMap, FxIndexSet, HealthyMutex, IndexSetSlice, Message,
-    NodeBuilder, NodeChannel, NodeId, Request, Response, TopologyRequest, TopologyResponse,
-    TupleMap,
+    id::NodeId,
+    message::{Message, Request, Response, TopologyRequest, TopologyResponse},
+    node::{self, respond, rpc, BuildNode, NodeBuilder, NodeBuilderData, NodeChannel},
+    FxHashMap, FxIndexSet, HealthyMutex, TupleMap,
 };
-use serde::{Deserialize, Serialize};
 
-type Node = common::Node<
-    NodeState,
-    InboundRequest,
-    OutboundResponse<'static>,
-    OutboundRequest<'static>,
-    InboundResponse,
->;
+use messages::{InboundRequest, InboundResponse, OutboundRequest, OutboundResponse};
+
+type Node = node::Node<InboundRequest, InboundResponse, NodeState>;
 
 /// Interval between healing broadcasts
 const HEALING_INTERVAL: Duration = Duration::from_millis(1000);
@@ -34,14 +32,16 @@ struct NodeState {
 #[tokio::main]
 async fn main() {
     // Build node
-    let node = NodeBuilder::init().with_state(initialize_node).build();
+    let node = NodeBuilder::init()
+        .with_state(initialize_node)
+        .build::<Node>();
     // Spawn background healing task
     tokio::spawn(healing_task(Arc::clone(&node)));
     // Run request handler
     node.run(request_handler);
 }
 
-fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
+fn initialize_node(builder_data: &NodeBuilderData, channel: &mut NodeChannel) -> NodeState {
     // Receive and respond to initial topology message
     let topology_request = channel.receive_msg::<TopologyRequest>();
     channel.send_msg(Message {
@@ -54,9 +54,9 @@ fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
     });
 
     // Obtain node neighbours from topology
-    let mut topology = topology_request.body.kind.into_inner().topology;
+    let mut topology = topology_request.body.kind.topology();
     let neighbours = topology
-        .remove(&node_id)
+        .remove(&builder_data.id)
         .expect("the topology should include this node's neighbours");
 
     // Create empty list for failed broadcasts
@@ -240,37 +240,3 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
         }
     }
 }
-
-define_msg_kind!(
-    #[derive(Debug, Deserialize)]
-    enum InboundRequest {
-        Read {},
-        Broadcast { message: u64 },
-        BroadcastMany { messages: FxIndexSet<u64> },
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize)]
-    enum OutboundResponse<'a> {
-        ReadOk { messages: &'a FxIndexSet<u64> },
-        BroadcastOk {},
-        BroadcastManyOk {},
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize)]
-    enum OutboundRequest<'a> {
-        Broadcast { message: u64 },
-        BroadcastMany { messages: &'a IndexSetSlice<u64> },
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize, Deserialize)]
-    enum InboundResponse {
-        BroadcastOk {},
-        BroadcastManyOk {},
-    }
-);

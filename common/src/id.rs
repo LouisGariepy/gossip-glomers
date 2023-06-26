@@ -1,9 +1,33 @@
+use std::sync::atomic::AtomicU64;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(transparent)]
 /// A type representing message IDs.
-pub struct MessageId(pub(crate) u64);
+pub struct MsgId(pub(crate) u64);
+
+/// Type that atomically generates sequential IDs.
+#[derive(Default)]
+pub struct AtomicIdGenerator(AtomicU64);
+
+impl AtomicIdGenerator {
+    /// Generates the next ID.
+    pub fn next(&self) -> u64 {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Type that atomically generates sequential message IDs.
+#[derive(Default)]
+pub struct MsgIdGenerator(AtomicIdGenerator);
+
+impl MsgIdGenerator {
+    /// Generates the next ID.
+    pub fn next(&self) -> MsgId {
+        MsgId(self.0.next())
+    }
+}
 
 /// A type representing the ID of a client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,7 +41,7 @@ impl From<ClientId> for u64 {
 
 /// A type representing the ID of a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(u64);
+pub struct NodeId(pub u64);
 
 impl From<NodeId> for u64 {
     fn from(value: NodeId) -> Self {

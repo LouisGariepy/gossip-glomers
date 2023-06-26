@@ -1,3 +1,5 @@
+mod messages;
+
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -7,18 +9,15 @@ use std::{
 };
 
 use common::{
-    define_msg_kind, respond, rpc, FxHashMap, FxIndexSet, HealthyMutex, IndexSetSlice, Message,
-    NodeBuilder, NodeChannel, NodeId, Request, Response, TopologyRequest, TopologyResponse,
+    id::NodeId,
+    message::{Message, Request, Response, TopologyRequest, TopologyResponse},
+    node::{self, respond, rpc, BuildNode, NodeBuilder, NodeBuilderData, NodeChannel},
+    FxHashMap, FxIndexSet, HealthyMutex,
 };
-use serde::{Deserialize, Serialize};
 
-type Node = common::Node<
-    NodeState,
-    InboundRequest,
-    OutboundResponse<'static>,
-    OutboundRequest<'static>,
-    InboundResponse,
->;
+use messages::{InboundRequest, InboundResponse, OutboundRequest, OutboundResponse};
+
+type Node = node::Node<InboundRequest, InboundResponse, NodeState>;
 
 /// Interval between healing broadcasts
 const HEALING_INTERVAL: Duration = Duration::from_millis(1000);
@@ -46,7 +45,9 @@ struct NodeState {
 #[tokio::main]
 async fn main() {
     // Build node
-    let node = NodeBuilder::init().with_state(initialize_node).build();
+    let node = NodeBuilder::init()
+        .with_state(initialize_node)
+        .build::<Node>();
     // Spawn background healing task
     healing_task(Arc::clone(&node));
     // Spawn background batch broadcasting task
@@ -55,7 +56,7 @@ async fn main() {
     node.run(request_handler);
 }
 
-fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
+fn initialize_node(builder_data: &NodeBuilderData, channel: &mut NodeChannel) -> NodeState {
     // Receive and respond to initial topology message
     let topology_request = channel.receive_msg::<TopologyRequest>();
     channel.send_msg(Message {
@@ -68,9 +69,9 @@ fn initialize_node(node_id: NodeId, channel: &mut NodeChannel) -> NodeState {
     });
 
     // Obtain node neighbours from topology
-    let mut topology = topology_request.body.kind.into_inner().topology;
+    let mut topology = topology_request.body.kind.topology();
     let neighbours = topology
-        .remove(&node_id)
+        .remove(&builder_data.id)
         .expect("the topology should include this node's neighbours");
 
     // Create empty map for failed broadcasts
@@ -144,7 +145,7 @@ fn broadcasting_task(node: Arc<Node>) {
             interval.tick().await;
 
             let (broadcast_timestamp, messages) = {
-                let messages_guard = &node.state.messages.lock();
+                let messages_guard = node.state.messages.lock();
 
                 // If there were no new messages since last broadcast
                 // then skip this broadcast
@@ -165,9 +166,9 @@ fn broadcasting_task(node: Arc<Node>) {
                     .iter()
                     .copied()
                     .map(|neighbour| {
-                        let msg_id = node.next_msg_id();
+                        let msg_id = node.msg_id_gen.next();
                         let msg_ser = node.serialize_request(Message {
-                            src: node.node_id.into(),
+                            src: node.id.into(),
                             dest: neighbour.into(),
                             body: Request {
                                 msg_id,
@@ -235,36 +236,3 @@ async fn request_handler(node: Arc<Node>, request: Message<Request<InboundReques
         }
     }
 }
-
-define_msg_kind!(
-    #[derive(Debug, Deserialize)]
-    enum InboundRequest {
-        Read {},
-        Broadcast { message: u64 },
-        BroadcastMany { messages: FxIndexSet<u64> },
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize)]
-    enum OutboundResponse<'a> {
-        ReadOk { messages: &'a FxIndexSet<u64> },
-        BroadcastOk {},
-        BroadcastManyOk {},
-    }
-);
-
-define_msg_kind!(
-    inbound,
-    #[derive(Debug, Serialize)]
-    enum OutboundRequest<'a> {
-        BroadcastMany { messages: &'a IndexSetSlice<u64> },
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize, Deserialize)]
-    enum InboundResponse {
-        BroadcastManyOk {},
-    }
-);

@@ -1,38 +1,27 @@
-use std::sync::Arc;
+mod messages;
 
-use serde::{Deserialize, Serialize};
+use common::{
+    id::MsgIdGenerator,
+    node::{BuildNode, NodeBuilder, SimpleNode},
+    respond,
+};
 
-use common::{define_msg_kind, respond, Message, MessageId, Never, NodeBuilder, NodeId, Response};
-
-type Node = common::Node<(), InboundRequest, OutboundResponse, Never, Never>;
+use messages::{InboundRequest, OutboundResponse};
 
 #[tokio::main]
 async fn main() {
     NodeBuilder::init()
-        .build()
-        .run(|node: Arc<Node>, request| async move {
+        .with_default_state::<MsgIdGenerator>()
+        .build::<SimpleNode<InboundRequest, _>>()
+        .run(|node, request| async move {
             // Send a unique id made up of the node's id and
             // an atomically incremented msg id.
             respond!(
                 node,
                 request,
-                OutboundResponse::GenerateOk(GenerateOk {
-                    id: (node.node_id, node.next_msg_id()),
-                })
+                OutboundResponse::GenerateOk {
+                    id: (node.id, node.state.next()),
+                }
             );
         });
 }
-
-define_msg_kind!(
-    #[derive(Debug, Deserialize)]
-    enum InboundRequest {
-        Generate {},
-    }
-);
-
-define_msg_kind!(
-    #[derive(Debug, Serialize)]
-    enum OutboundResponse {
-        GenerateOk { id: (NodeId, MessageId) },
-    }
-);
