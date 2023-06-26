@@ -2,7 +2,7 @@
 
 My solutions to Fly.io's [Gossip Glommers](https://fly.io/dist-sys/) problems in distributed systems.
 
-This repository include solutions to challenges up to and including 5c, and my implementation for distributed nodes. My implementation emphasize flexibility and a special attention to performance. It's not the simplest possible implementation, but it is fairly powerful.
+This repository include solutions to challenges up to and including 5c, and my implementation for distributed nodes. My implementation emphasize flexibility, correctness, and a special attention to performance. It's not the simplest, but it is fairly powerful.
 
 ## Common
 This crate contains messages common to all challenges, node implementations, ID handling and various other items necessary for the challenges.
