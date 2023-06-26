@@ -54,12 +54,6 @@ impl Challenge {
     }
 }
 
-impl std::fmt::Display for Topology {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self.as_str(), f)
-    }
-}
-
 #[derive(Clone, ValueEnum)]
 enum Topology {
     Grid,
@@ -80,6 +74,12 @@ impl Topology {
             Topology::Tree3 => "tree3",
             Topology::Tree4 => "tree4",
         }
+    }
+}
+
+impl std::fmt::Display for Topology {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.as_str(), f)
     }
 }
 
