@@ -1,7 +1,4 @@
-use common::{
-    json::{SerIterMap, SerIterSeq},
-    FxHashMap,
-};
+use common::json::{SerIterMap, SerIterSeq};
 use serde::{Deserialize, Serialize};
 
 use crate::Wal;
@@ -16,11 +13,11 @@ pub(crate) enum LeaderInboundRequest {
         msg: u64,
     },
     Poll {
-        offsets: FxHashMap<String, u64>,
+        offsets: Vec<(String, u64)>,
     },
     CommitOffsets {
         #[serde(rename = "offsets")]
-        commits: FxHashMap<String, u64>,
+        commits: Vec<(String, u64)>,
     },
     ListCommittedOffsets {
         #[serde(rename = "keys")]
@@ -75,11 +72,11 @@ pub(crate) enum FollowerInboundRequest {
         msg: u64,
     },
     Poll {
-        offsets: FxHashMap<String, u64>,
+        offsets: Vec<(String, u64)>,
     },
     CommitOffsets {
         #[serde(rename = "offsets")]
-        commits: FxHashMap<String, u64>,
+        commits: Vec<(String, u64)>,
     },
     ListCommittedOffsets {
         #[serde(rename = "keys")]
