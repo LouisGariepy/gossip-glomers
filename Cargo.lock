@@ -357,7 +357,8 @@ checksum = "fed44880c466736ef9a5c5b5facefb5ed0785676d0c02d612db14e54f0d84286"
 [[package]]
 name = "indexmap"
 version = "2.0.0"
-source = "git+https://github.com/bluss/indexmap#8e47be81a10bcb4b203955d6f6eb05bf85630c20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5477fe2230a79769d8dc68e0eabf5437907c0457a5614a9e8dddb67f65eb65d"
 dependencies = [
  "equivalent",
  "hashbrown",
