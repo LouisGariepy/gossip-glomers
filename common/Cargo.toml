@@ -9,7 +9,7 @@ edition = "2021"
 serde.workspace = true
 tokio.workspace = true
 
-indexmap = { git = "https://github.com/bluss/indexmap", features = ["serde"] }
+indexmap = { version = "2.0.0", features = ["serde"] }
 rustc-hash = "1.1.0"
 serde_json = { version = "1.0.99" }
 serde_repr = "0.1.12"
